@@ -144,15 +144,48 @@ class ScheduleResolver:
         concrete.sort(key=lambda i: i.start)
         return concrete
 
-    def _interval_for(self, rule: ActivityRule, on_date: date, override_time=None) -> Optional[Interval]:
-        window = override_time or rule.time_constraints.fixed_interval
+    def _interval_for(
+        self,
+        rule: ActivityRule,
+        on_date: date,
+        override_time=None,
+    ) -> Optional[Interval]:
+
+        if override_time is not None:
+            window = override_time
+        else:
+            day_code = _day_code(on_date)
+
+            window = rule.time_constraints.day_time_windows.get(day_code)
+
+            if window is None:
+                window = rule.time_constraints.fixed_interval
+
         if window is None:
-            return None  # no concrete slot yet (FLEXIBLE/OPTIONAL/TODO) — not the resolver's job
+            return None
+
         s_h, s_m = map(int, window.start_time.split(":"))
         e_h, e_m = map(int, window.end_time.split(":"))
+
+        start = datetime.combine(
+            on_date,
+            datetime.min.time().replace(
+                hour=s_h,
+                minute=s_m,
+            ),
+        )
+
+        end = datetime.combine(
+            on_date,
+            datetime.min.time().replace(
+                hour=e_h,
+                minute=e_m,
+            ),
+        )
+
         return Interval(
-            start=datetime.combine(on_date, datetime.min.time().replace(hour=s_h, minute=s_m)),
-            end=datetime.combine(on_date, datetime.min.time().replace(hour=e_h, minute=e_m)),
+            start=start,
+            end=end,
             activity_id=rule.id,
             name=rule.name,
             flexibility=rule.flexibility,

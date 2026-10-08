@@ -36,6 +36,12 @@ def _window_interval(window: TimeWindow, day: date) -> tuple[datetime, datetime]
         raise OperationError(f"Time range must end after it starts: {window.start_time}-{window.end_time}.")
     return start, end
 
+def _has_concrete_time(rule: ActivityRule) -> bool:
+    return (
+        rule.time_constraints.fixed_interval is not None
+        or bool(rule.time_constraints.day_time_windows)
+    )
+
 
 def _rule_occurs(rule: ActivityRule, target: date) -> bool:
     recurrence = rule.recurrence
@@ -269,7 +275,7 @@ def _insert_resolved_activity(
     on_date: date,
     action: str,
 ) -> OperationResult:
-    if rule.time_constraints.fixed_interval is None:
+    if not _has_concrete_time(rule):
         candidate = state.copy()
         candidate.add_rule(rule)
         return _result(candidate, "ADDED_UNPLACED", action, rule.id)
@@ -397,7 +403,7 @@ def create_exception(
 
 
 def preview_activity(state: CalendarState, rule: ActivityRule, on_date: date) -> OperationResult:
-    if rule.time_constraints.fixed_interval is None:
+    if not _has_concrete_time(rule):
         return _result(state.copy(), "UNPLACED", "PREVIEW", rule.id)
     local = resolve_conflict_locally(state.resolver(), rule, on_date)
     return _result(state.copy(), local.status, "PREVIEW", rule.id, local)

@@ -77,6 +77,17 @@ class Recurrence:
 @dataclass
 class TimeConstraints:
     fixed_interval: Optional[TimeWindow] = None
+
+    # New:
+    # Allows one activity to have different fixed times on different weekdays.
+    #
+    # Example:
+    # {
+    #     "MON": TimeWindow("07:00", "08:30"),
+    #     "TUE": TimeWindow("09:00", "10:30"),
+    # }
+    day_time_windows: dict[str, TimeWindow] = field(default_factory=dict)
+
     allowed_windows: List[TimeWindow] = field(default_factory=list)
     allowed_days: List[str] = field(default_factory=list)
     min_duration_minutes: Optional[int] = None
@@ -88,6 +99,11 @@ class TimeConstraints:
         d = {}
         if self.fixed_interval:
             d["fixed_interval"] = self.fixed_interval.to_dict()
+        if self.day_time_windows:
+            d["day_time_windows"] = {
+                day: window.to_dict()
+                for day, window in self.day_time_windows.items()
+            }
         if self.allowed_windows:
             d["allowed_windows"] = [w.to_dict() for w in self.allowed_windows]
         if self.allowed_days:
@@ -179,6 +195,10 @@ def time_constraints_from_dict(data: dict) -> TimeConstraints:
         max_duration_minutes=data.get("max_duration_minutes"),
         deadline=data.get("deadline"),
         date=data.get("date"),
+        day_time_windows={
+            day: time_window_from_dict(window)
+            for day, window in data.get("day_time_windows", {}).items()
+        },
     )
     return constraints
 
@@ -256,6 +276,14 @@ ACTIVITY_RULE_SCHEMA = {
                     "type": "object",
                     "properties": {
                         "fixed_interval": {"$ref": "#/definitions/TimeWindow"},
+                        "day_time_windows": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                day: {"$ref": "#/definitions/TimeWindow"}
+                                for day in DAY_NAMES
+                            },
+                        },
                         "allowed_windows": {"type": "array", "items": {"$ref": "#/definitions/TimeWindow"}},
                         "allowed_days": {"type": "array", "items": {"type": "string", "enum": DAY_NAMES}},
                         "min_duration_minutes": {"type": "integer"},

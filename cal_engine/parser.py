@@ -373,3 +373,209 @@ def _build_exception(parsed: _ParsedTokens, ref: date) -> CalendarException:
         new_time=new_time,
     )
 
+
+def parse_batch_schedule(
+    text: str,
+    reference_date: Optional[date] = None,
+) -> List[ActivityRule]:
+    """
+    Parse a batch schedule file.
+
+    Example:
+
+        event "Math"
+          mon 07:00-08:30
+          tue 09:00-10:30
+          wed 07:00-08:30
+
+        event "English"
+          mon 14:00-15:00
+          wed 14:00-15:00
+
+        event "Lunch"
+          daily 12:00-13:00
+          except sat sun
+    """
+
+    ref = reference_date or date.today()
+
+    rules: List[ActivityRule] = []
+
+    current_name: Optional[str] = None
+    current_lines: List[str] = []
+
+    def flush_event() -> None:
+        nonlocal current_name, current_lines
+
+        if current_name is None:
+            return
+
+        rule = _parse_batch_event(
+            current_name,
+            current_lines,
+            ref,
+        )
+
+        rules.append(rule)
+
+        current_name = None
+        current_lines = []
+
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+
+        # Empty lines
+        if not line:
+            continue
+
+        # Comments
+        if line.startswith("#"):
+            continue
+
+        if line.lower().startswith("event "):
+            flush_event()
+
+            raw_name = line[6:].strip()
+
+            if (
+                len(raw_name) >= 2
+                and raw_name[0] == '"'
+                and raw_name[-1] == '"'
+            ):
+                raw_name = raw_name[1:-1]
+
+            if not raw_name:
+                raise CommandParseError(
+                    f"Batch line {line_number}: event requires a name."
+                )
+
+            current_name = raw_name
+            continue
+
+        if current_name is None:
+            raise CommandParseError(
+                f"Batch line {line_number}: expected 'event NAME'."
+            )
+
+        current_lines.append(line)
+
+    flush_event()
+
+    return rules
+
+
+def _parse_batch_event(
+    name: str,
+    lines: List[str],
+    ref: date,
+) -> ActivityRule:
+    """
+    Parse one event from a batch schedule.
+    """
+
+    if not lines:
+        raise CommandParseError(
+            f"Batch event '{name}' has no schedule."
+        )
+
+    day_time_windows: dict[str, TimeWindow] = {}
+
+    daily_window: Optional[TimeWindow] = None
+    except_days: List[str] = []
+
+    recurrence_days: List[str] = []
+
+    for line in lines:
+        parts = shlex.split(line)
+
+        if not parts:
+            continue
+
+        command = parts[0].lower()
+
+        if command == "daily":
+            if len(parts) != 2:
+                raise CommandParseError(
+                    f"Batch event '{name}': "
+                    f"'daily' requires TIME."
+                )
+
+            daily_window = _parse_time_range(parts[1])
+            continue
+
+        if command == "except":
+            if len(parts) < 2:
+                raise CommandParseError(
+                    f"Batch event '{name}': "
+                    f"'except' requires at least one day."
+                )
+
+            except_days.extend(
+                _normalize_day(day)
+                for day in parts[1:]
+            )
+            continue
+
+        if command in _DAY_ALIASES:
+            if len(parts) != 2:
+                raise CommandParseError(
+                    f"Batch event '{name}': "
+                    f"'{command}' requires TIME."
+                )
+
+            day = _normalize_day(command)
+
+            if day in day_time_windows:
+                raise CommandParseError(
+                    f"Batch event '{name}' defines "
+                    f"{day} more than once."
+                )
+
+            day_time_windows[day] = _parse_time_range(parts[1])
+            recurrence_days.append(day)
+            continue
+
+        raise CommandParseError(
+            f"Batch event '{name}': unknown schedule "
+            f"directive '{parts[0]}'."
+        )
+
+    # Daily schedule
+    if daily_window is not None:
+        recurrence = Recurrence(
+            type=RecurrenceType.DAILY,
+            except_days=sorted(set(except_days)),
+        )
+
+        return ActivityRule(
+            id=name,
+            name=name,
+            flexibility=Flexibility.FIXED,
+            priority=Priority.HIGH,
+            recurrence=recurrence,
+            time_constraints=TimeConstraints(
+                fixed_interval=daily_window,
+            ),
+        )
+
+    # Per-weekday schedule
+    if day_time_windows:
+        recurrence = Recurrence(
+            type=RecurrenceType.WEEKLY,
+            days_of_week=recurrence_days,
+        )
+
+        return ActivityRule(
+            id=name,
+            name=name,
+            flexibility=Flexibility.FIXED,
+            priority=Priority.HIGH,
+            recurrence=recurrence,
+            time_constraints=TimeConstraints(
+                day_time_windows=day_time_windows,
+            ),
+        )
+
+    raise CommandParseError(
+        f"Batch event '{name}' has no valid schedule."
+    )
