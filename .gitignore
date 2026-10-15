@@ -1,0 +1,15 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+data/*
+!data/.gitkeep
+
+
+schedule.txt
+cal_changes.jsonl
+calendar.json

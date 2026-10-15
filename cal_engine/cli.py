@@ -6,12 +6,14 @@ import copy
 import json
 import shlex
 import sys
+from pathlib import Path
 from datetime import date, datetime, timedelta
 from typing import Optional
 
 from .ai_escalation import build_conflict_prompt
 from .batch import import_batch_file
 from .duration import parse_duration_minutes
+from .change_log import log_change
 from .models import (
     ActivityRule,
     CalendarException,
@@ -59,6 +61,9 @@ DIRECT_ACTIONS = {
     "batch",
     "today",
     "week",
+
+    "--reset",
+
 }
 
 
@@ -122,6 +127,17 @@ def _run_batch(
 
     if save_path:
         updated.save(save_path)
+
+    log_change(
+        "BATCH_IMPORT",
+        activities=added,
+        details=f"Imported {len(added)} activities from {path}.",
+        log_path=(
+            Path(save_path).with_name("cal_changes.jsonl")
+            if save_path
+            else "cal_changes.jsonl"
+        ),
+    )
 
     return 0
 
@@ -326,10 +342,24 @@ def _activity_from_tokens(tokens: list[str], reference: date) -> tuple[ActivityR
 
 def _complete(result, save_path: Optional[str]) -> int:
     _print_json(result.to_dict())
+
     if result.status == "REQUIRES_AI":
         return 2
+
     if save_path:
         result.state.save(save_path)
+
+    log_change(
+        result.action,
+        activities=[result.activity_id],
+        details=f"status={result.status}",
+        log_path=(
+            __import__("pathlib").Path(save_path).with_name("cal_changes.jsonl")
+            if save_path
+            else "cal_changes.jsonl"
+        ),
+    )
+
     return 0
 
 
@@ -489,6 +519,11 @@ def _execute(argv: list[str]) -> int:
     if argv and argv[0] == "cal":
         argv = argv[1:]
 
+    if argv in (["gui"], ["--gui"]):
+        from .gui import main as gui_main
+        gui_main()
+        return 0
+
     if not argv:
         _print_sample()
         return 0
@@ -524,34 +559,44 @@ def _execute(argv: list[str]) -> int:
             reference,
         )
 
+
     # ------------------------------------------------------------
     # Batch
     # ------------------------------------------------------------
 
-    if argv[0] in {"batch", "--batch"}:
-        if len(argv) != 2:
+    batch_index = next(
+        (i for i, token in enumerate(argv) if token in {"batch", "--batch"}),
+        None,
+    )
+
+    if batch_index is not None:
+        global_args = _global_parser().parse_args(argv[:batch_index])
+        remaining = argv[batch_index + 1:]
+
+        if len(remaining) != 1:
             raise CLIError(
                 "Batch requires exactly one schedule file.\n"
-                "Example: cal --batch schedule.txt"
+                "Example: python main.py --save calendar.json --batch schedule.txt"
             )
-
-        global_args = _global_parser().parse_args([])
 
         reference = _parse_cli_date(
             global_args.reference_date,
             date.today(),
         )
 
-        state = CalendarState.load(
-            global_args.load
-        ) if global_args.load else CalendarState()
+        state = (
+            CalendarState.load(global_args.load)
+            if global_args.load
+            else CalendarState()
+        )
 
         return _run_batch(
-            argv[1],
+            remaining[0],
             state,
             reference,
             global_args.save,
         )
+
 
     # ------------------------------------------------------------
     # Existing command system
@@ -591,6 +636,38 @@ def _execute(argv: list[str]) -> int:
     )
 
     tokens = argv[action_index + 1:]
+    if action == "--reset":
+        if tokens:
+            raise CLIError("--reset does not accept extra arguments.")
+
+        if not global_args.save:
+            raise CLIError(
+                "Reset requires --save so you explicitly choose "
+                "which calendar file to clear.\n"
+                "Example: python main.py --load calendar.json "
+                "--reset --save calendar.json"
+            )
+
+        old_activity_ids = [rule.id for rule in state.rules]
+
+        # Create a fresh, empty calendar.
+        empty_state = CalendarState()
+        empty_state.save(global_args.save)
+
+        log_change(
+            "RESET",
+            activities=old_activity_ids,
+            details=f"Removed {len(old_activity_ids)} activities.",
+            log_path=Path(global_args.save).with_name("cal_changes.jsonl"),
+        )
+
+        _print_json({
+            "status": "RESET",
+            "removed_activities": old_activity_ids,
+            "count": len(old_activity_ids),
+            "saved_to": global_args.save,
+        })
+        return 0
 
     if action in {
         "--add",
