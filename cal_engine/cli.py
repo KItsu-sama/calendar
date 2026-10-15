@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from .ai_escalation import build_conflict_prompt
+from .batch import import_batch_file
 from .duration import parse_duration_minutes
 from .models import (
     ActivityRule,
@@ -53,6 +54,11 @@ DIRECT_ACTIONS = {
     "--conflicts",
     "--preview",
     "--generate-prompt",
+
+    "--batch",
+    "batch",
+    "today",
+    "week",
 }
 
 
@@ -94,6 +100,80 @@ def _global_parser() -> argparse.ArgumentParser:
     )
     return parser
 
+def _run_batch(
+    path: str,
+    state: CalendarState,
+    reference: date,
+    save_path: Optional[str],
+) -> int:
+    updated, added = import_batch_file(
+        state,
+        path,
+        reference,
+    )
+
+    result = {
+        "status": "ADDED",
+        "count": len(added),
+        "activities": added,
+    }
+
+    _print_json(result)
+
+    if save_path:
+        updated.save(save_path)
+
+    return 0
+
+def _run_today(
+    state: CalendarState,
+    reference: date,
+) -> int:
+    schedule = state.resolver().build_actual_schedule(
+        reference,
+        reference,
+    )
+
+    _print_json(
+        {
+            "date": reference.isoformat(),
+            "day": reference.strftime("%A"),
+            "schedule": [
+                item.to_dict()
+                for item in schedule
+            ],
+        }
+    )
+
+    return 0
+
+def _run_week(
+    state: CalendarState,
+    reference: date,
+) -> int:
+    start = reference - timedelta(
+        days=reference.weekday()
+    )
+
+    end = start + timedelta(days=6)
+
+    schedule = state.resolver().build_actual_schedule(
+        start,
+        end,
+    )
+
+    _print_json(
+        {
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "schedule": [
+                item.to_dict()
+                for item in schedule
+            ],
+        }
+    )
+
+    return 0
 
 def _direct_parser(action: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=f"python main.py {action}")
@@ -408,29 +488,137 @@ def _print_sample() -> None:
 def _execute(argv: list[str]) -> int:
     if argv and argv[0] == "cal":
         argv = argv[1:]
+
     if not argv:
         _print_sample()
         return 0
+
     if argv in (["-h"], ["--help"]):
         _global_parser().parse_args(argv)
         return 0
 
-    action = next((token for token in argv if token in DIRECT_ACTIONS), None)
+    # ------------------------------------------------------------
+    # Special commands
+    # ------------------------------------------------------------
+
+    if argv[0] in {"today", "week"}:
+        global_args = _global_parser().parse_args([])
+
+        reference = _parse_cli_date(
+            global_args.reference_date,
+            date.today(),
+        )
+
+        state = CalendarState.load(
+            global_args.load
+        ) if global_args.load else CalendarState()
+
+        if argv[0] == "today":
+            return _run_today(
+                state,
+                reference,
+            )
+
+        return _run_week(
+            state,
+            reference,
+        )
+
+    # ------------------------------------------------------------
+    # Batch
+    # ------------------------------------------------------------
+
+    if argv[0] in {"batch", "--batch"}:
+        if len(argv) != 2:
+            raise CLIError(
+                "Batch requires exactly one schedule file.\n"
+                "Example: cal --batch schedule.txt"
+            )
+
+        global_args = _global_parser().parse_args([])
+
+        reference = _parse_cli_date(
+            global_args.reference_date,
+            date.today(),
+        )
+
+        state = CalendarState.load(
+            global_args.load
+        ) if global_args.load else CalendarState()
+
+        return _run_batch(
+            argv[1],
+            state,
+            reference,
+            global_args.save,
+        )
+
+    # ------------------------------------------------------------
+    # Existing command system
+    # ------------------------------------------------------------
+
+    action = next(
+        (
+            token
+            for token in argv
+            if token in DIRECT_ACTIONS
+        ),
+        None,
+    )
+
     if action is None:
-        parsed = parse_command("cal " + shlex.join(argv))
+        parsed = parse_command(
+            "cal " + shlex.join(argv)
+        )
         _print_json(parsed.to_dict())
         return 0
 
     action_index = argv.index(action)
-    global_args = _global_parser().parse_args(argv[:action_index])
-    reference = _parse_cli_date(global_args.reference_date, date.today())
-    state = CalendarState.load(global_args.load) if global_args.load else CalendarState()
-    tokens = argv[action_index + 1 :]
-    if action in {"--add", "--remove", "--change", "--move", "--cancel", "--exception"}:
-        return _run_mutation(action, tokens, state, reference, global_args.save)
+
+    global_args = _global_parser().parse_args(
+        argv[:action_index]
+    )
+
+    reference = _parse_cli_date(
+        global_args.reference_date,
+        date.today(),
+    )
+
+    state = (
+        CalendarState.load(global_args.load)
+        if global_args.load
+        else CalendarState()
+    )
+
+    tokens = argv[action_index + 1:]
+
+    if action in {
+        "--add",
+        "--remove",
+        "--change",
+        "--move",
+        "--cancel",
+        "--exception",
+    }:
+        return _run_mutation(
+            action,
+            tokens,
+            state,
+            reference,
+            global_args.save,
+        )
+
     if global_args.save:
-        raise CLIError("--save is only valid with a mutating action.")
-    return _run_query(action, tokens, state, reference)
+        raise CLIError(
+            "--save is only valid with a mutating action."
+        )
+
+    return _run_query(
+        action,
+        tokens,
+        state,
+        reference,
+    )
 
 
 def main(argv: Optional[list[str]] = None) -> int:

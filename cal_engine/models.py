@@ -182,25 +182,30 @@ def time_window_from_dict(data: dict) -> TimeWindow:
 
 
 def time_constraints_from_dict(data: dict) -> TimeConstraints:
-    """Build TimeConstraints, preserving the one-off date used by temp rules."""
-    constraints = TimeConstraints(
+    """Build TimeConstraints from JSON-compatible data."""
+
+    day_time_windows = {
+        day: time_window_from_dict(window)
+        for day, window in data.get("day_time_windows", {}).items()
+    }
+
+    return TimeConstraints(
         fixed_interval=(
             time_window_from_dict(data["fixed_interval"])
             if data.get("fixed_interval")
             else None
         ),
-        allowed_windows=[time_window_from_dict(window) for window in data.get("allowed_windows", [])],
+        day_time_windows=day_time_windows,
+        allowed_windows=[
+            time_window_from_dict(window)
+            for window in data.get("allowed_windows", [])
+        ],
         allowed_days=list(data.get("allowed_days", [])),
         min_duration_minutes=data.get("min_duration_minutes"),
         max_duration_minutes=data.get("max_duration_minutes"),
         deadline=data.get("deadline"),
         date=data.get("date"),
-        day_time_windows={
-            day: time_window_from_dict(window)
-            for day, window in data.get("day_time_windows", {}).items()
-        },
     )
-    return constraints
 
 
 def activity_rule_from_dict(data: dict) -> ActivityRule:
