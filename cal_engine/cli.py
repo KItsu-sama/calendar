@@ -14,6 +14,7 @@ from .ai_escalation import build_conflict_prompt
 from .batch import import_batch_file
 from .duration import parse_duration_minutes
 from .change_log import log_change
+from .ai_escalation import build_conflict_prompt, build_schedule_review_prompt
 from .models import (
     ActivityRule,
     CalendarException,
@@ -428,6 +429,18 @@ def _run_query(
     reference: date,
 ) -> int:
     has_activity = bool(tokens and tokens[0] in PRIMARY_FLAGS)
+
+    if action == "--generate-prompt" and not tokens:
+        print(
+            build_schedule_review_prompt(
+                state.resolver(),
+                state.rules,
+                state.exceptions,
+                reference,
+            )
+        )
+        return 0
+    
     if action in {"--preview", "--generate-prompt"} or (action == "--conflicts" and has_activity):
         rule, target = _activity_from_tokens(tokens, reference)
         result = preview_activity(state, rule, target)
@@ -629,11 +642,17 @@ def _execute(argv: list[str]) -> int:
         date.today(),
     )
 
-    state = (
-        CalendarState.load(global_args.load)
-        if global_args.load
-        else CalendarState()
-    )
+    state_path = global_args.load
+
+    # Convenience default for whole-calendar reports.
+    if (
+        action == "--generate-prompt"
+        and not state_path
+        and Path("calendar.json").is_file()
+    ):
+        state_path = "calendar.json"
+
+    state = CalendarState.load(state_path) if state_path else CalendarState()
 
     tokens = argv[action_index + 1:]
     if action == "--reset":

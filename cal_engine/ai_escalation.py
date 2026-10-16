@@ -166,6 +166,118 @@ def build_conflict_prompt(
     return "\n".join(parts)
 
 
+def build_schedule_review_prompt(
+    resolver: ScheduleResolver,
+    rules: List[ActivityRule],
+    exceptions: list,
+    reference_date: date,
+) -> str:
+    """Build a whole-calendar AI review prompt for the smallest useful window."""
+    has_dated_items = any(
+        rule.recurrence.type.value == "NONE"
+        and rule.time_constraints.date
+        for rule in rules
+    )
+    use_month_window = has_dated_items or bool(exceptions)
+
+    if use_month_window:
+        start = reference_date
+        end = start + timedelta(days=29)
+        period = "30-day planning window"
+    else:
+        start = reference_date - timedelta(days=reference_date.weekday())
+        end = start + timedelta(days=6)
+        period = "weekly repeating cycle"
+
+    schedule = sorted(
+        resolver.build_actual_schedule(start, end),
+        key=lambda item: item.start,
+    )
+
+    conflicts = []
+    for index, left in enumerate(schedule):
+        for right in schedule[index + 1:]:
+            if right.start >= left.end:
+                break
+            if left.start < right.end and left.end > right.start:
+                conflicts.append(
+                    f"- {left.start.date()} "
+                    f"{left.start:%H:%M}-{left.end:%H:%M}: "
+                    f"{left.name} [{left.activity_id}] overlaps "
+                    f"{right.name} [{right.activity_id}] "
+                    f"({max(left.start, right.start):%H:%M}-"
+                    f"{min(left.end, right.end):%H:%M})"
+                )
+
+    unplaced = [
+        rule for rule in rules
+        if rule.time_constraints.fixed_interval is None
+        and not rule.time_constraints.day_time_windows
+    ]
+
+    rules_text = (
+        json.dumps(
+            [rule.to_dict() for rule in rules],
+            indent=2,
+            ensure_ascii=False,
+        )
+        if rules else "(no activities defined)"
+    )
+    exceptions_text = (
+        json.dumps(
+            [item.to_dict() for item in exceptions],
+            indent=2,
+            ensure_ascii=False,
+        )
+        if exceptions else "(none)"
+    )
+
+    parts = [
+        "=" * 80,
+        "CALENDAR CONSTRAINTS ENGINE - WHOLE SCHEDULE REVIEW",
+        "=" * 80,
+        "",
+        "[SYSTEM CONTEXT]",
+        "Review the complete calendar and recommend a practical schedule.",
+        "Use the engine's schedule, free time, conflicts, rules, and exceptions.",
+        "Do not invent missing facts.",
+        "",
+        "[REVIEW WINDOW]",
+        f"Type: {period}",
+        f"Period: {start.isoformat()} to {end.isoformat()}",
+        "",
+        "[CURRENT SCHEDULE MATRIX - ACTIVITIES AND FREE TIME]",
+        _format_schedule_matrix(resolver, start, end),
+        "",
+        "[DETECTED OVERLAPS]",
+        "\n".join(conflicts) if conflicts else "(none detected)",
+        "",
+        "[ALL ACTIVITY RULES - SOURCE OF TRUTH]",
+        rules_text,
+        "",
+        "[UNPLACED TASK POOL]",
+        _format_task_pool(unplaced),
+        "",
+        "[CALENDAR EXCEPTIONS]",
+        exceptions_text,
+        "",
+        _RULES_AND_HIERARCHY,
+        "",
+        "[REVIEW INSTRUCTIONS]",
+        "1. Identify conflicts, overloaded days, and unmet constraints.",
+        "2. Find useful ways to organize free time and unplaced tasks.",
+        "3. Preserve fixed/critical activities and deadlines.",
+        "4. Respect allowed days and time windows.",
+        "5. Explain trade-offs and list tasks that cannot be scheduled.",
+        "6. If no changes are needed, explain why.",
+        "7. Treat every recommendation as a proposal requiring validation.",
+        "",
+        _OUTPUT_FORMAT,
+        "=" * 80,
+    ]
+    return "\n".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # 2. Response schema + strict parsing
 # ---------------------------------------------------------------------------
