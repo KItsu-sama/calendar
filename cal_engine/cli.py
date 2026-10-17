@@ -44,6 +44,7 @@ from .parser import (
     parse_time_range,
 )
 from .storage import CalendarState, StorageError
+from .review import review_args, review_handle
 
 DIRECT_ACTIONS = {
     "--add",
@@ -65,6 +66,13 @@ DIRECT_ACTIONS = {
 
     "--reset",
 
+    # v0.2 review/export commands
+    "--review",
+    "--watch",
+    "--export-commands",
+    "--profile",
+    "--relations",
+    "--no-snapshot",
 }
 
 
@@ -104,6 +112,8 @@ def _global_parser() -> argparse.ArgumentParser:
         default=date.today().isoformat(),
         help="Anchor date (YYYY-MM-DD or D/M) for omitted dates and weekday names.",
     )
+    parser.add_argument("--on", help="Reference date (YYYY-MM-DD or D/M) for review/week commands.")
+    review_args(parser)
     return parser
 
 def _run_batch(
@@ -632,6 +642,12 @@ def _execute(argv: list[str]) -> int:
         return 0
 
     action_index = argv.index(action)
+
+    # review/export/watch commands: parse the full argv so flags
+    # like --export-commands FILE, --profile, --relations, --no-snapshot are seen.
+    if action in {"--review", "--watch", "--export-commands", "--profile", "--relations", "--no-snapshot"}:
+        global_args = _global_parser().parse_args(argv)
+        return review_handle(global_args) or 0
 
     global_args = _global_parser().parse_args(
         argv[:action_index]
