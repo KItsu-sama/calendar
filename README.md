@@ -1,3 +1,5 @@
+v0.1
+
 Command	            Purpose
 --help	            Display main CLI help.
 today	            Show the schedule for the reference date.
