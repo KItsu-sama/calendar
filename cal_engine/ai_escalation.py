@@ -32,7 +32,11 @@ _RULES_AND_HIERARCHY = """\
 2. CHANGEABLE activities may be moved ONLY to their explicit allowed destinations.
 3. FLEXIBLE activities can be shifted into any contiguous FREE time block that satisfies their minimum duration.
 4. OPTIONAL activities should be compressed or deleted if space is constrained.
-5. Absolute respect for task deadlines."""
+5. Absolute respect for task deadlines.
+6. UNALLOCATED TIME means no scheduled activity is recorded in that interval.
+   It does not confirm that the user is available. Do not assume sleep,
+   meals, commuting, chores, or rest can be displaced unless the calendar
+   provides enough information to make that judgment."""
 
 _OUTPUT_FORMAT = """\
 [REQUIRED OUTPUT FORMAT]
@@ -68,7 +72,10 @@ def _format_schedule_matrix(resolver: ScheduleResolver, start_date: date, end_da
         for entry in entries:
             start_s, end_s = entry.start.strftime("%H:%M"), entry.end.strftime("%H:%M")
             if entry.activity_id == "FREE":
-                lines.append(f"- {start_s} - {end_s} | FREE TIME")
+                lines.append(
+                    f"- {start_s} - {end_s} | UNALLOCATED TIME "
+                    "(availability unknown)"
+                )
             else:
                 flex = entry.flexibility.value if entry.flexibility else "?"
                 prio = entry.priority or "?"
