@@ -40,7 +40,7 @@ def test_higher_priority_wins_when_only_one_slot_fits():
 
 
 def test_buffer_is_enforced_between_proposed_activities():
-    short_window = {DAY: [(9 * 60, 10 * 60 + 15)]}
+    short_window = {DAY: [(9 * 60, 10 * 60)]}
     plan = place_activities(
         [activity("a", duration=30), activity("b", duration=30)],
         short_window,
