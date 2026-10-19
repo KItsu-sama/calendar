@@ -166,7 +166,7 @@ def run_review(state_path, profile_path=None, relations_path=None, on: date | No
 
     # --- coordinated placement. This is a proposal only; source rules remain unchanged.
     out.append("")
-    out.append("[PROPOSED PLAN — REVIEW BEFORE ACCEPTING]")
+    out.append(f"[PROPOSED PLAN — REVIEW BEFORE ACCEPTING | {start.isoformat()} to {horizon_end.isoformat()}]")
     if profile.is_empty:
         out.append("(availability unknown; add profile.json before proposing placements)")
     elif not derived:
