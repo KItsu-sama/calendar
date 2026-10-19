@@ -21,6 +21,7 @@ from pathlib import Path
 from .availability import DAYS, Profile, load_profile, to_hhmm
 from .decompile import state_to_script
 from .derive import candidate_slots, expand_occurrences, generate_derived
+from .planner import place_activities
 
 
 # ------------------------------------------------------------------- loading
@@ -81,8 +82,7 @@ def diff_sections(old: dict | None, new: dict) -> list[str]:
     for sec in ("rules", "relations", "exceptions", "profile"):
         a, b = old.get(sec, {}), new.get(sec, {})
         for k in sorted(b.keys() - a.keys()):
-            lines.append(f"+ {sec}: {k}")
-        for k in sorted(a.keys() - b.keys()):
+            lines.append(f"+ {sec}: {k}")        for k in sorted(a.keys() - b.keys()):
             lines.append(f"- {sec}: {k}")
         for k in sorted(a.keys() & b.keys()):
             if a[k] != b[k]:
@@ -164,6 +164,26 @@ def run_review(state_path, profile_path=None, relations_path=None, on: date | No
         out.append("(none)")
     out.append(f"-- {len(derived)} derived, {unplaceable} with no candidate slot")
 
+    # --- coordinated placement. This is a proposal only; source rules remain unchanged.
+    out.append("")
+    out.append("[PROPOSED PLAN — REVIEW BEFORE ACCEPTING]")
+    if profile.is_empty:
+        out.append("(availability unknown; add profile.json before proposing placements)")
+    elif not derived:
+        out.append("(no derived activities to place)")
+    else:
+        plan = place_activities(derived, usable, buffer_min=profile.buffer_min)
+        for item in plan["placed"]:
+            inst = item["instance"]
+            out.append(
+                f"- {item['start']:%a %Y-%m-%d %H:%M}-{item['end']:%H:%M} | "
+                f"{inst['instance_id']} | {inst['priority']} | {inst['group']}"
+            )
+        for item in plan["unplaced"]:
+            inst = item["instance"]
+            out.append(f"- UNPLACED | {inst['instance_id']} | {item['reason']}")
+        out.append(f"-- {len(plan['placed'])} proposed, {len(plan['unplaced'])} unplaced; no source events were changed")
+
     if save_snapshot:
         snap_file.write_text(json.dumps({
             "saved_at": datetime.now().isoformat(timespec="seconds"),
@@ -187,8 +207,7 @@ def _mtimes(paths) -> dict:
 
 def watch(paths, fn, interval: float = 1.0, max_runs: int | None = None) -> int:
     """Call fn() now and again whenever any file in `paths` is saved."""
-    last = _mtimes(paths)
-    fn()
+    last = _mtimes(paths)    fn()
     runs = 1
     while max_runs is None or runs < max_runs:
         _time.sleep(interval)
