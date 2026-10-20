@@ -28,3 +28,19 @@ Command	            Purpose
 --profile FILE	        profile.json (protected time, buffers).
 --relations FILE	        relations.json (prep/review rules).
 --no-snapshot	        Do not update the change snapshot.
+
+## Group timetable editor
+
+The group timetable editor is available through the main CLI and the shared Windows launcher:
+
+```text
+python main.py group-schedule
+python main.py group-schedule --init-config groups_schedules.json
+python main.py group-schedule --export-config groups_schedules.json --calendar calendar.json
+```
+
+- `group-schedule` opens the editor.
+- `--init-config FILE` creates an editable example configuration using the calendar command parser.
+- `--export-config FILE --calendar FILE` exports the configured timetable while retaining unrelated calendar rules.
+- Run `run_calendar.cmd` to open the combined Windows menu. The older `run_gui.cmd` and `run_group_schedule_editor.cmd` launchers remain available and route through it.
+
