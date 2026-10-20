@@ -542,6 +542,51 @@ def _execute(argv: list[str]) -> int:
     if argv and argv[0] == "cal":
         argv = argv[1:]
 
+    if argv and argv[0] in {"group-schedule", "--group-schedule"}:
+        group_parser = argparse.ArgumentParser(
+            prog="python main.py group-schedule",
+            description="Edit and export reusable group timetables.",
+        )
+        group_parser.add_argument(
+            "--init-config",
+            metavar="FILE",
+            help="Create an example group/schedule configuration from calendar commands.",
+        )
+        group_parser.add_argument(
+            "--export-config",
+            metavar="FILE",
+            help="Export an existing group/schedule configuration into a calendar.",
+        )
+        group_parser.add_argument(
+            "--calendar",
+            default="calendar.json",
+            help="Calendar JSON destination for --export-config (default: calendar.json).",
+        )
+        group_args = group_parser.parse_args(argv[1:])
+        from .group_schedule import default_config, save_config, load_config, export_to_calendar
+
+        if group_args.init_config:
+            save_config(default_config(), group_args.init_config)
+            print(json.dumps({
+                "status": "CONFIG_CREATED",
+                "path": str(Path(group_args.init_config)),
+            }, indent=2))
+            return 0
+        if group_args.export_config:
+            count = export_to_calendar(
+                load_config(group_args.export_config),
+                group_args.calendar,
+            )
+            print(json.dumps({
+                "status": "EXPORTED",
+                "count": count,
+                "calendar": str(Path(group_args.calendar)),
+            }, indent=2))
+            return 0
+        from .group_schedule_gui import main as group_editor_main
+        group_editor_main()
+        return 0
+
     if argv in (["gui"], ["--gui"]):
         from .gui import main as gui_main
         gui_main()
