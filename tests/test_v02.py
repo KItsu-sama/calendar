@@ -228,3 +228,64 @@ def test_watch_reruns_after_save(workdir):
     threading.Thread(target=touch).start()
     runs = watch([str(sp)], lambda: calls.append(1), interval=0.05, max_runs=2)
     assert runs == 2 and len(calls) == 2
+
+
+
+from datetime import date, datetime
+
+from cal_engine.planner import plan_activities
+
+
+def test_planner_never_overlaps_its_own_suggestions():
+    day = date(2026, 10, 19)
+    instances = [
+        {
+            "instance_id": "task-a",
+            "priority": "HIGH",
+            "near_edge": "start",
+            "near_lo": datetime(2026, 10, 19, 9, 0),
+            "near_hi": datetime(2026, 10, 19, 11, 0),
+            "duration": {"min": 60, "ideal": 60, "max": 90},
+        },
+        {
+            "instance_id": "task-b",
+            "priority": "NORMAL",
+            "near_edge": "start",
+            "near_lo": datetime(2026, 10, 19, 9, 0),
+            "near_hi": datetime(2026, 10, 19, 11, 0),
+            "duration": {"min": 60, "ideal": 60, "max": 90},
+        },
+    ]
+
+    result = plan_activities(
+        instances,
+        {day: [(9 * 60, 11 * 60)]},
+    )
+
+    placements = result["placements"]
+    assert len(placements) == 2
+
+    first, second = placements
+    assert first["end"] <= second["start"] or second["end"] <= first["start"]
+
+
+def test_planner_reports_activity_that_cannot_fit():
+    day = date(2026, 10, 19)
+    instance = {
+        "instance_id": "long-task",
+        "priority": "HIGH",
+        "near_edge": "start",
+        "near_lo": datetime(2026, 10, 19, 9, 0),
+        "near_hi": datetime(2026, 10, 19, 10, 0),
+        "duration": {"min": 60, "ideal": 60, "max": 90},
+    }
+
+    result = plan_activities(
+        [instance],
+        {day: [(9 * 60, 9 * 60 + 30)]},
+    )
+
+    assert result["placements"] == []
+    assert len(result["unscheduled"]) == 1
+    assert result["unscheduled"][0]["instance"]["instance_id"] == "long-task"
+
