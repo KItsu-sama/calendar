@@ -7,7 +7,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from .group_schedule import default_config, load_config, save_config, export_to_calendar
+from .group_schedule import load_config, save_config, export_to_calendar
 
 DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
 DAY_LABELS = {"MON":"Mon","TUE":"Tue","WED":"Wed","THU":"Thu","FRI":"Fri","SAT":"Sat","SUN":"Sun"}
@@ -17,7 +17,7 @@ class GroupScheduleEditor:
         self.root = root
         root.title("cal — Group & Schedule Editor")
         root.geometry("1120x760")
-        self.config = default_config()
+        self.config = {"version": 1, "groups": [], "schedules": []}
         self.config_path = Path("groups_schedules.json")
         self._build()
         self._populate_groups()
@@ -25,7 +25,7 @@ class GroupScheduleEditor:
         self._populate_activities()
         self._load_group_fields()
         self._load_schedule_fields()
-        self._status("Ready. Edit the fields, then Save configuration or Export to calendar.json.")
+        self._status("Empty configuration. Add a group and schedule, then save or export.")
 
     def _build(self):
         top = ttk.Frame(self.root, padding=10); top.pack(fill="x")
@@ -81,7 +81,6 @@ class GroupScheduleEditor:
 
         bottom = ttk.Frame(self.root, padding=10); bottom.pack(fill="x")
         ttk.Button(bottom, text="Export to calendar.json…", command=self.export).pack(side="left")
-        ttk.Button(bottom, text="Reset editor to school example", command=self.reset).pack(side="left", padx=8)
         self.status = tk.StringVar(value="Ready")
         ttk.Label(bottom, textvariable=self.status).pack(side="left", padx=12)
 
@@ -204,9 +203,6 @@ class GroupScheduleEditor:
             self._status(f"Exported {count} timetable rules to {path}")
             messagebox.showinfo("Export complete",f"Exported {count} timetable rules. Existing non-timetable rules were retained.\n\nNote: override_policy is stored in the group configuration; the existing calendar engine does not yet enforce it as a first-class field.")
         except Exception as e: messagebox.showerror("Export failed",str(e))
-    def reset(self):
-        if messagebox.askyesno("Reset editor", "Discard current unsaved edits and reload the example school timetable?"):
-            self.config=default_config(); self._populate_groups(); self._populate_schedules(); self._populate_activities(); self._load_group_fields(); self._load_schedule_fields(); self._status("Reset to built-in example; save if you want to keep it.")
 
 def main():
     root=tk.Tk(); GroupScheduleEditor(root); root.mainloop()
