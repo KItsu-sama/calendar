@@ -5,7 +5,6 @@ existing version-1 calendar.json files remain schema-compatible.
 """
 from __future__ import annotations
 
-import copy
 import json
 import re
 from pathlib import Path
@@ -18,53 +17,82 @@ from .models import (
 from .storage import CalendarState, StorageError
 
 CONFIG_VERSION = 1
-GENERATED_PREFIX = "school_timetable__"
+GENERATED_PREFIX = "group_schedule__"
 DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
-DEFAULT_CONFIG: dict[str, Any] = {
-    "version": CONFIG_VERSION,
-    "groups": [{
-        "id": "school", "name": "School", "priority": "HIGH",
-        "flexibility": "FIXED", "override_policy": "overrideable",
-        "description": "Activities that belong to the school timetable.",
-    }],
-    "schedules": [{
-        "id": "school_week", "name": "Weekly school timetable", "group_id": "school",
-        "days": ["MON", "TUE", "WED", "THU", "FRI"],
-        "start_time": "07:00", "end_time": "11:15", "period_minutes": 45,
-        "breaks": [{"id": "break", "name": "Break", "start_time": "08:30", "end_time": "09:00", "priority": "HIGH", "override_policy": "overrideable"}],
-        "activities": [
-            {"id":"mon_p1","day":"MON","period":1,"name":"CHAOCO","start_time":"07:00","end_time":"07:45"},
-            {"id":"mon_p2","day":"MON","period":2,"name":"Địa Lí","start_time":"07:45","end_time":"08:30"},
-            {"id":"mon_p3","day":"MON","period":3,"name":"Toán","start_time":"09:00","end_time":"09:45"},
-            {"id":"mon_p4","day":"MON","period":4,"name":"Hóa Học","start_time":"09:45","end_time":"10:30"},
-            {"id":"mon_p5","day":"MON","period":5,"name":"Tin Học","start_time":"10:30","end_time":"11:15"},
-            {"id":"tue_p1","day":"TUE","period":1,"name":"HĐTN","start_time":"07:00","end_time":"07:45"},
-            {"id":"tue_p2","day":"TUE","period":2,"name":"Văn Học","start_time":"07:45","end_time":"08:30"},
-            {"id":"tue_p3","day":"TUE","period":3,"name":"Vật Lí","start_time":"09:00","end_time":"09:45"},
-            {"id":"tue_p4","day":"TUE","period":4,"name":"Vật Lí","start_time":"09:45","end_time":"10:30"},
-            {"id":"tue_p5","day":"TUE","period":5,"name":"Lịch Sử","start_time":"10:30","end_time":"11:15"},
-            {"id":"wed_p1","day":"WED","period":1,"name":"GDQP","start_time":"07:00","end_time":"07:45"},
-            {"id":"wed_p2","day":"WED","period":2,"name":"Toán","start_time":"07:45","end_time":"08:30"},
-            {"id":"wed_p3","day":"WED","period":3,"name":"Hóa Học","start_time":"09:00","end_time":"09:45"},
-            {"id":"wed_p4","day":"WED","period":4,"name":"Văn Học","start_time":"09:45","end_time":"10:30"},
-            {"id":"wed_p5","day":"WED","period":5,"name":"Địa Lí","start_time":"10:30","end_time":"11:15"},
-            {"id":"thu_p1","day":"THU","period":1,"name":"Anh Văn","start_time":"07:00","end_time":"07:45"},
-            {"id":"thu_p2","day":"THU","period":2,"name":"Anh Văn","start_time":"07:45","end_time":"08:30"},
-            {"id":"thu_p3","day":"THU","period":3,"name":"Toán","start_time":"09:00","end_time":"09:45"},
-            {"id":"thu_p4","day":"THU","period":4,"name":"Hóa Học","start_time":"09:45","end_time":"10:30"},
-            {"id":"thu_p5","day":"THU","period":5,"name":"Vật Lí","start_time":"10:30","end_time":"11:15"},
-            {"id":"fri_p1","day":"FRI","period":1,"name":"Văn Học","start_time":"07:00","end_time":"07:45"},
-            {"id":"fri_p2","day":"FRI","period":2,"name":"Toán","start_time":"07:45","end_time":"08:30"},
-            {"id":"fri_p3","day":"FRI","period":3,"name":"Anh Văn","start_time":"09:00","end_time":"09:45"},
-            {"id":"fri_p4","day":"FRI","period":4,"name":"Tin Học","start_time":"09:45","end_time":"10:30"},
-            {"id":"fri_p5","day":"FRI","period":5,"name":"HĐTN","start_time":"10:30","end_time":"11:15"}
-        ]
-    }]
-}
-
-
 def default_config() -> dict[str, Any]:
-    return copy.deepcopy(DEFAULT_CONFIG)
+    """Build the editor's example from ordinary calendar commands.
+
+    Keeping the example as commands makes it use the same parser and activity
+    model as the rest of the calendar engine, rather than a second hard-coded
+    configuration schema.
+    """
+    from .parser import parse_command
+
+    timetable = [
+        ("MON", 1, "CHAOCO", "07:00", "07:45"),
+        ("MON", 2, "Địa Lí", "07:45", "08:30"),
+        ("MON", 3, "Toán", "09:00", "09:45"),
+        ("MON", 4, "Hóa Học", "09:45", "10:30"),
+        ("MON", 5, "Tin Học", "10:30", "11:15"),
+        ("TUE", 1, "HĐTN", "07:00", "07:45"),
+        ("TUE", 2, "Văn Học", "07:45", "08:30"),
+        ("TUE", 3, "Vật Lí", "09:00", "09:45"),
+        ("TUE", 4, "Vật Lí", "09:45", "10:30"),
+        ("TUE", 5, "Lịch Sử", "10:30", "11:15"),
+        ("WED", 1, "GDQP", "07:00", "07:45"),
+        ("WED", 2, "Toán", "07:45", "08:30"),
+        ("WED", 3, "Hóa Học", "09:00", "09:45"),
+        ("WED", 4, "Văn Học", "09:45", "10:30"),
+        ("WED", 5, "Địa Lí", "10:30", "11:15"),
+        ("THU", 1, "Anh Văn", "07:00", "07:45"),
+        ("THU", 2, "Anh Văn", "07:45", "08:30"),
+        ("THU", 3, "Toán", "09:00", "09:45"),
+        ("THU", 4, "Hóa Học", "09:45", "10:30"),
+        ("THU", 5, "Vật Lí", "10:30", "11:15"),
+        ("FRI", 1, "Văn Học", "07:00", "07:45"),
+        ("FRI", 2, "Toán", "07:45", "08:30"),
+        ("FRI", 3, "Anh Văn", "09:00", "09:45"),
+        ("FRI", 4, "Tin Học", "09:45", "10:30"),
+        ("FRI", 5, "HĐTN", "10:30", "11:15"),
+    ]
+    activities = []
+    for day, period, name, start_time, end_time in timetable:
+        # Parse every entry through the same command grammar as normal events.
+        rule = parse_command(
+            f'cal --fixed "{name}" --{day.lower()} --time {start_time}-{end_time}'
+        )
+        window = rule.time_constraints.fixed_interval
+        activities.append({
+            "id": f"{day.lower()}_p{period}",
+            "day": day,
+            "period": period,
+            "name": rule.name,
+            "start_time": window.start_time,
+            "end_time": window.end_time,
+        })
+
+    return {
+        "version": CONFIG_VERSION,
+        "groups": [{
+            "id": "school",
+            "name": "School",
+            "priority": "HIGH",
+            "flexibility": "FIXED",
+            "override_policy": "overrideable",
+            "description": "Activities that belong to the school timetable.",
+        }],
+        "schedules": [{
+            "id": "school_week",
+            "name": "Weekly school timetable",
+            "group_id": "school",
+            "days": ["MON", "TUE", "WED", "THU", "FRI"],
+            "start_time": "07:00",
+            "end_time": "11:15",
+            "period_minutes": 45,
+            "breaks": [],
+            "activities": activities,
+        }],
+    }
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
