@@ -13,19 +13,39 @@ DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
 DAY_LABELS = {"MON":"Mon","TUE":"Tue","WED":"Wed","THU":"Thu","FRI":"Fri","SAT":"Sat","SUN":"Sun"}
 
 class GroupScheduleEditor:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Tk, config_path: str | Path | None = None):
         self.root = root
         root.title("cal — Group & Schedule Editor")
         root.geometry("1120x760")
-        self.config = default_config()
-        self.config_path = Path("groups_schedules.json")
+
+        self.config: dict[str, Any] = {
+            "version": 1,
+            "groups": [],
+            "schedules": [],
+        }
+
+        self.config_path = Path(config_path) if config_path else Path("groups_schedules.json")
+
         self._build()
+
+        if self.config_path.is_file():
+            try:
+                self.config = load_config(self.config_path)
+                self._status(f"Loaded {self.config_path}")
+            except (ValueError, OSError) as exc:
+                messagebox.showerror("Configuration load failed", str(exc))
+                self._status("Configuration could not be loaded.")
+        else:
+            self._status(
+                "No configuration loaded. Open an existing file or create "
+                "a group and schedule, then save."
+            )
+
         self._populate_groups()
         self._populate_schedules()
         self._populate_activities()
         self._load_group_fields()
         self._load_schedule_fields()
-        self._status("Ready. Edit the fields, then Save configuration or Export to calendar.json.")
 
     def _build(self):
         top = ttk.Frame(self.root, padding=10); top.pack(fill="x")

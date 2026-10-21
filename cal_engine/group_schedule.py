@@ -19,6 +19,9 @@ from .storage import CalendarState, StorageError
 CONFIG_VERSION = 1
 GENERATED_PREFIX = "group_schedule__"
 DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
+
+
+
 def default_config() -> dict[str, Any]:
     """Build the editor's example from ordinary calendar commands.
 
