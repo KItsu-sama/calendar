@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import (
-    ActivityRule, CalendarException, Flexibility, Priority, Recurrence,
+    ActivityRule, Flexibility, Priority, Recurrence,
     RecurrenceType, TimeConstraints, TimeWindow,
 )
 from .storage import CalendarState, StorageError
@@ -20,84 +20,6 @@ CONFIG_VERSION = 1
 GENERATED_PREFIX = "group_schedule__"
 DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
 
-
-
-def default_config() -> dict[str, Any]:
-    """Build the editor's example from ordinary calendar commands.
-
-    Keeping the example as commands makes it use the same parser and activity
-    model as the rest of the calendar engine, rather than a second hard-coded
-    configuration schema.
-    """
-    from .parser import parse_command
-
-    timetable = [
-        ("MON", 1, "CHAOCO", "07:00", "07:45"),
-        ("MON", 2, "Địa Lí", "07:45", "08:30"),
-        ("MON", 3, "Toán", "09:00", "09:45"),
-        ("MON", 4, "Hóa Học", "09:45", "10:30"),
-        ("MON", 5, "Tin Học", "10:30", "11:15"),
-        ("TUE", 1, "HĐTN", "07:00", "07:45"),
-        ("TUE", 2, "Văn Học", "07:45", "08:30"),
-        ("TUE", 3, "Vật Lí", "09:00", "09:45"),
-        ("TUE", 4, "Vật Lí", "09:45", "10:30"),
-        ("TUE", 5, "Lịch Sử", "10:30", "11:15"),
-        ("WED", 1, "GDQP", "07:00", "07:45"),
-        ("WED", 2, "Toán", "07:45", "08:30"),
-        ("WED", 3, "Hóa Học", "09:00", "09:45"),
-        ("WED", 4, "Văn Học", "09:45", "10:30"),
-        ("WED", 5, "Địa Lí", "10:30", "11:15"),
-        ("THU", 1, "Anh Văn", "07:00", "07:45"),
-        ("THU", 2, "Anh Văn", "07:45", "08:30"),
-        ("THU", 3, "Toán", "09:00", "09:45"),
-        ("THU", 4, "Hóa Học", "09:45", "10:30"),
-        ("THU", 5, "Vật Lí", "10:30", "11:15"),
-        ("FRI", 1, "Văn Học", "07:00", "07:45"),
-        ("FRI", 2, "Toán", "07:45", "08:30"),
-        ("FRI", 3, "Anh Văn", "09:00", "09:45"),
-        ("FRI", 4, "Tin Học", "09:45", "10:30"),
-        ("FRI", 5, "HĐTN", "10:30", "11:15"),
-    ]
-    activities = []
-    for day, period, name, start_time, end_time in timetable:
-        # Parse every entry through the same command grammar as normal events.
-        rule = parse_command(
-            f'cal --fixed "{name}" --{day.lower()} --time {start_time}-{end_time}'
-        )
-        window = rule.time_constraints.fixed_interval
-        activities.append({
-            "id": f"{day.lower()}_p{period}",
-            "day": day,
-            "period": period,
-            "name": rule.name,
-            "start_time": window.start_time,
-            "end_time": window.end_time,
-        })
-
-    return {
-        "version": CONFIG_VERSION,
-        "groups": [{
-            "id": "school",
-            "name": "School",
-            "priority": "HIGH",
-            "flexibility": "FIXED",
-            "override_policy": "overrideable",
-            "description": "Activities that belong to the school timetable.",
-        }],
-        "schedules": [{
-            "id": "school_week",
-            "name": "Weekly school timetable",
-            "group_id": "school",
-            "days": ["MON", "TUE", "WED", "THU", "FRI"],
-            "start_time": "07:00",
-            "end_time": "11:15",
-            "period_minutes": 45,
-            "breaks": [],
-            "activities": activities,
-        }],
-    }
-
-
 def load_config(path: str | Path) -> dict[str, Any]:
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -105,7 +27,6 @@ def load_config(path: str | Path) -> dict[str, Any]:
         raise ValueError(f"Cannot load group/schedule configuration: {exc}") from None
     validate_config(data)
     return data
-
 
 def save_config(config: dict[str, Any], path: str | Path) -> None:
     validate_config(config)

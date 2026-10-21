@@ -548,11 +548,6 @@ def _execute(argv: list[str]) -> int:
             description="Edit and export reusable group timetables.",
         )
         group_parser.add_argument(
-            "--init-config",
-            metavar="FILE",
-            help="Create an example group/schedule configuration from calendar commands.",
-        )
-        group_parser.add_argument(
             "--export-config",
             metavar="FILE",
             help="Export an existing group/schedule configuration into a calendar.",
@@ -563,15 +558,8 @@ def _execute(argv: list[str]) -> int:
             help="Calendar JSON destination for --export-config (default: calendar.json).",
         )
         group_args = group_parser.parse_args(argv[1:])
-        from .group_schedule import default_config, save_config, load_config, export_to_calendar
+        from .group_schedule import load_config, export_to_calendar
 
-        if group_args.init_config:
-            save_config(default_config(), group_args.init_config)
-            print(json.dumps({
-                "status": "CONFIG_CREATED",
-                "path": str(Path(group_args.init_config)),
-            }, indent=2))
-            return 0
         if group_args.export_config:
             count = export_to_calendar(
                 load_config(group_args.export_config),

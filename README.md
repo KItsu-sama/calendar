@@ -35,12 +35,10 @@ The group timetable editor is available through the main CLI and the shared Wind
 
 ```text
 python main.py group-schedule
-python main.py group-schedule --init-config groups_schedules.json
 python main.py group-schedule --export-config groups_schedules.json --calendar calendar.json
 ```
 
-- `group-schedule` opens the editor.
-- `--init-config FILE` creates an editable example configuration using the calendar command parser.
+- `group-schedule` opens an empty editor. Add groups and schedules explicitly, or open an existing configuration file.
 - `--export-config FILE --calendar FILE` exports the configured timetable while retaining unrelated calendar rules.
 - Run `run_calendar.cmd` to open the combined Windows menu. The older `run_gui.cmd` and `run_group_schedule_editor.cmd` launchers remain available and route through it.
 
