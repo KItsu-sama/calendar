@@ -36,11 +36,20 @@ def _window_interval(window: TimeWindow, day: date) -> tuple[datetime, datetime]
         raise OperationError(f"Time range must end after it starts: {window.start_time}-{window.end_time}.")
     return start, end
 
-def _has_concrete_time(rule: ActivityRule) -> bool:
+def has_concrete_time(rule: ActivityRule) -> bool:
     return (
         rule.time_constraints.fixed_interval is not None
         or bool(rule.time_constraints.day_time_windows)
     )
+
+
+_has_concrete_time = has_concrete_time  # backwards-compatible alias
+
+
+def window_for(rule: ActivityRule, day: date) -> Optional[TimeWindow]:
+    """The window that applies on `day`: per-weekday window first, else fixed_interval."""
+    tc = rule.time_constraints
+    return tc.day_time_windows.get(day_code_for(day)) or tc.fixed_interval
 
 
 def _rule_occurs(rule: ActivityRule, target: date) -> bool:
@@ -226,6 +235,7 @@ def _apply_one_change(state: CalendarState, change: dict, source_date: date) -> 
         updated.time_constraints.fixed_interval = TimeWindow(
             start_time=start.strftime("%H:%M"), end_time=end.strftime("%H:%M")
         )
+        updated.time_constraints.day_time_windows = {}  # otherwise a weekday window would override the new time
         if hasattr(updated.time_constraints, "date"):
             updated.time_constraints.date = start.date().isoformat()
         state.replace_rule(updated)
@@ -275,11 +285,12 @@ def _insert_resolved_activity(
     on_date: date,
     action: str,
 ) -> OperationResult:
-    if not _has_concrete_time(rule):
+    window = window_for(rule, on_date) if has_concrete_time(rule) else None
+    if window is None:
         candidate = state.copy()
         candidate.add_rule(rule)
         return _result(candidate, "ADDED_UNPLACED", action, rule.id)
-    start, end = _window_interval(rule.time_constraints.fixed_interval, on_date)
+    start, end = _window_interval(window, on_date)
     _validate_rule_constraints(rule, start, end)
     local = resolve_conflict_locally(state.resolver(), rule, on_date)
     if local.status == "REQUIRES_AI":
@@ -305,7 +316,7 @@ def add_activity(
         raise OperationError(f"Activity '{rule.id}' already exists.")
     effective_date = target_date or (
         first_occurrence(rule, reference_date)
-        if rule.time_constraints.fixed_interval
+        if has_concrete_time(rule)
         else reference_date
     )
     return _insert_resolved_activity(state, rule, effective_date, "ADD")
@@ -322,7 +333,7 @@ def change_activity(
     base.remove_rule(updated_rule.id)
     effective_date = (
         first_occurrence(updated_rule, reference_date, target_date)
-        if updated_rule.time_constraints.fixed_interval is not None
+        if has_concrete_time(updated_rule)
         else (target_date or reference_date)
     )
     return _insert_resolved_activity(base, updated_rule, effective_date, "CHANGE")
@@ -379,6 +390,7 @@ def create_exception(
     )
     candidate_rule = copy.deepcopy(rule)
     candidate_rule.time_constraints.fixed_interval = window
+    candidate_rule.time_constraints.day_time_windows = {}  # the exception window must win
     local = resolve_conflict_locally(temporary.resolver(), candidate_rule, target_date)
     if local.status == "REQUIRES_AI":
         return _result(state.copy(), local.status, action.value, activity_id, local)
@@ -403,7 +415,7 @@ def create_exception(
 
 
 def preview_activity(state: CalendarState, rule: ActivityRule, on_date: date) -> OperationResult:
-    if not _has_concrete_time(rule):
+    if window_for(rule, on_date) is None:
         return _result(state.copy(), "UNPLACED", "PREVIEW", rule.id)
     local = resolve_conflict_locally(state.resolver(), rule, on_date)
     return _result(state.copy(), local.status, "PREVIEW", rule.id, local)
@@ -426,4 +438,3 @@ def conflicts_in_schedule(state: CalendarState, start: date, end: date) -> list[
                     }
                 )
     return conflicts
-

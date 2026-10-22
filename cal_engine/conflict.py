@@ -25,7 +25,7 @@ from datetime import date, datetime, timedelta
 from typing import List, Optional
 
 from .models import ActivityRule, Flexibility, Priority
-from .resolver import Interval, ScheduleResolver, next_occurrence
+from .resolver import Interval, ScheduleResolver, day_code_for, next_occurrence
 
 
 def find_overlapping_intervals(schedule: List[Interval], start: datetime, end: datetime) -> List[Interval]:
@@ -51,7 +51,10 @@ class LocalSolveResult:
 
 
 def _fixed_window_on(rule: ActivityRule, on_date: date):
-    window = rule.time_constraints.fixed_interval
+    # Same precedence the resolver uses: a per-weekday window wins over the
+    # rule-wide fixed_interval.
+    tc = rule.time_constraints
+    window = tc.day_time_windows.get(day_code_for(on_date)) or tc.fixed_interval
     if window is None:
         return None, None
     s_h, s_m = map(int, window.start_time.split(":"))
@@ -72,13 +75,29 @@ def _slot_contains(free_slots: List[Interval], start: datetime, end: datetime) -
     return any(slot.start <= start and slot.end >= end for slot in free_slots)
 
 
-def _try_move_changeable(resolver: ScheduleResolver, rule: ActivityRule, conflict: Interval) -> Optional[ProposedChange]:
+def _free_slots(resolver: ScheduleResolver, day: date, extra_busy: List[Interval]) -> List[Interval]:
+    """Free time for `day`, also treating placements already proposed during
+    this solve as occupied -- otherwise two relocated items can be handed the
+    same slot because each was computed against the unmodified schedule."""
+    schedule = resolver.build_actual_schedule(day, day)
+    schedule = schedule + [iv for iv in extra_busy if iv.start.date() == day]
+    start = datetime.combine(day, datetime.min.time())
+    return ScheduleResolver.calculate_free_time(schedule, start, start + timedelta(days=1))
+
+
+def _try_move_changeable(
+    resolver: ScheduleResolver,
+    rule: ActivityRule,
+    conflict: Interval,
+    extra_busy: Optional[List[Interval]] = None,
+) -> Optional[ProposedChange]:
+    extra_busy = extra_busy or []
     if not rule.move_options or not rule.move_options.preferred_days:
         return None
     duration = conflict.end - conflict.start
     for day_code in rule.move_options.preferred_days:
         target_date = next_occurrence(conflict.start.date() + timedelta(days=1), day_code)
-        target_free = resolver.free_time_for_day(target_date)
+        target_free = _free_slots(resolver, target_date, extra_busy)
 
         # Prefer keeping the activity's usual time-of-day if it's open there.
         same_time_start = datetime.combine(target_date, conflict.start.time())
@@ -101,7 +120,12 @@ def _try_move_changeable(resolver: ScheduleResolver, rule: ActivityRule, conflic
 
 
 def _try_shift_flexible(
-    resolver: ScheduleResolver, rule: ActivityRule, conflict: Interval, new_start: datetime, new_end: datetime
+    resolver: ScheduleResolver,
+    rule: ActivityRule,
+    conflict: Interval,
+    new_start: datetime,
+    new_end: datetime,
+    extra_busy: Optional[List[Interval]] = None,
 ) -> Optional[ProposedChange]:
     on_date = conflict.start.date()
     duration = conflict.end - conflict.start
@@ -110,6 +134,7 @@ def _try_shift_flexible(
     # see what's left to shift it into.
     remaining = [iv for iv in day_schedule if iv.activity_id != rule.id]
     remaining.append(Interval(start=new_start, end=new_end, activity_id="__new__"))
+    remaining.extend(iv for iv in (extra_busy or []) if iv.start.date() == on_date)
     day_start = datetime.combine(on_date, datetime.min.time())
     day_end = day_start + timedelta(days=1)
     free_after = ScheduleResolver.calculate_free_time(remaining, day_start, day_end)
@@ -157,27 +182,30 @@ def resolve_conflict_locally(resolver: ScheduleResolver, new_rule: ActivityRule,
         )
 
     changes: List[ProposedChange] = []
+    placed: List[Interval] = []  # slots already claimed by earlier changes in this solve
     for conflict in conflicts:
         rule = resolver.get_rule(conflict.activity_id)
         if rule is None:
             return LocalSolveResult(status="REQUIRES_AI", conflicts=conflicts, reason=f"Unknown activity '{conflict.activity_id}'")
 
         if rule.flexibility == Flexibility.CHANGEABLE:
-            change = _try_move_changeable(resolver, rule, conflict)
+            change = _try_move_changeable(resolver, rule, conflict, placed)
             if change is None:
                 return LocalSolveResult(
                     status="REQUIRES_AI", conflicts=conflicts,
                     reason=f"No space on any allowed destination day for '{rule.id}'",
                 )
             changes.append(change)
+            placed.append(Interval(start=change.new_start, end=change.new_end, activity_id=change.activity_id))
         elif rule.flexibility == Flexibility.FLEXIBLE:
-            change = _try_shift_flexible(resolver, rule, conflict, new_start, new_end)
+            change = _try_shift_flexible(resolver, rule, conflict, new_start, new_end, placed)
             if change is None:
                 return LocalSolveResult(
                     status="REQUIRES_AI", conflicts=conflicts,
                     reason=f"No same-day space to shift FLEXIBLE activity '{rule.id}'",
                 )
             changes.append(change)
+            placed.append(Interval(start=change.new_start, end=change.new_end, activity_id=change.activity_id))
         else:
             return LocalSolveResult(
                 status="REQUIRES_AI", conflicts=conflicts,

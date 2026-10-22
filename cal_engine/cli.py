@@ -66,7 +66,7 @@ DIRECT_ACTIONS = {
 
     "--reset",
 
-    # v0.2 review/export commands
+    # review/export commands
     "--review",
     "--watch",
     "--export-commands",

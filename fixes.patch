@@ -1,0 +1,457 @@
+diff -ru '--exclude=__pycache__' cal_engine/conflict.py cal_engine/conflict.py
+--- cal_engine/conflict.py	2026-10-22 05:22:33.813059531 +0000
++++ cal_engine/conflict.py	2026-10-22 05:20:55.606738459 +0000
+@@ -25,7 +25,7 @@
+ from typing import List, Optional
+ 
+ from .models import ActivityRule, Flexibility, Priority
+-from .resolver import Interval, ScheduleResolver, next_occurrence
++from .resolver import Interval, ScheduleResolver, day_code_for, next_occurrence
+ 
+ 
+ def find_overlapping_intervals(schedule: List[Interval], start: datetime, end: datetime) -> List[Interval]:
+@@ -51,7 +51,10 @@
+ 
+ 
+ def _fixed_window_on(rule: ActivityRule, on_date: date):
+-    window = rule.time_constraints.fixed_interval
++    # Same precedence the resolver uses: a per-weekday window wins over the
++    # rule-wide fixed_interval.
++    tc = rule.time_constraints
++    window = tc.day_time_windows.get(day_code_for(on_date)) or tc.fixed_interval
+     if window is None:
+         return None, None
+     s_h, s_m = map(int, window.start_time.split(":"))
+@@ -72,13 +75,29 @@
+     return any(slot.start <= start and slot.end >= end for slot in free_slots)
+ 
+ 
+-def _try_move_changeable(resolver: ScheduleResolver, rule: ActivityRule, conflict: Interval) -> Optional[ProposedChange]:
++def _free_slots(resolver: ScheduleResolver, day: date, extra_busy: List[Interval]) -> List[Interval]:
++    """Free time for `day`, also treating placements already proposed during
++    this solve as occupied -- otherwise two relocated items can be handed the
++    same slot because each was computed against the unmodified schedule."""
++    schedule = resolver.build_actual_schedule(day, day)
++    schedule = schedule + [iv for iv in extra_busy if iv.start.date() == day]
++    start = datetime.combine(day, datetime.min.time())
++    return ScheduleResolver.calculate_free_time(schedule, start, start + timedelta(days=1))
++
++
++def _try_move_changeable(
++    resolver: ScheduleResolver,
++    rule: ActivityRule,
++    conflict: Interval,
++    extra_busy: Optional[List[Interval]] = None,
++) -> Optional[ProposedChange]:
++    extra_busy = extra_busy or []
+     if not rule.move_options or not rule.move_options.preferred_days:
+         return None
+     duration = conflict.end - conflict.start
+     for day_code in rule.move_options.preferred_days:
+         target_date = next_occurrence(conflict.start.date() + timedelta(days=1), day_code)
+-        target_free = resolver.free_time_for_day(target_date)
++        target_free = _free_slots(resolver, target_date, extra_busy)
+ 
+         # Prefer keeping the activity's usual time-of-day if it's open there.
+         same_time_start = datetime.combine(target_date, conflict.start.time())
+@@ -101,7 +120,12 @@
+ 
+ 
+ def _try_shift_flexible(
+-    resolver: ScheduleResolver, rule: ActivityRule, conflict: Interval, new_start: datetime, new_end: datetime
++    resolver: ScheduleResolver,
++    rule: ActivityRule,
++    conflict: Interval,
++    new_start: datetime,
++    new_end: datetime,
++    extra_busy: Optional[List[Interval]] = None,
+ ) -> Optional[ProposedChange]:
+     on_date = conflict.start.date()
+     duration = conflict.end - conflict.start
+@@ -110,6 +134,7 @@
+     # see what's left to shift it into.
+     remaining = [iv for iv in day_schedule if iv.activity_id != rule.id]
+     remaining.append(Interval(start=new_start, end=new_end, activity_id="__new__"))
++    remaining.extend(iv for iv in (extra_busy or []) if iv.start.date() == on_date)
+     day_start = datetime.combine(on_date, datetime.min.time())
+     day_end = day_start + timedelta(days=1)
+     free_after = ScheduleResolver.calculate_free_time(remaining, day_start, day_end)
+@@ -157,27 +182,30 @@
+         )
+ 
+     changes: List[ProposedChange] = []
++    placed: List[Interval] = []  # slots already claimed by earlier changes in this solve
+     for conflict in conflicts:
+         rule = resolver.get_rule(conflict.activity_id)
+         if rule is None:
+             return LocalSolveResult(status="REQUIRES_AI", conflicts=conflicts, reason=f"Unknown activity '{conflict.activity_id}'")
+ 
+         if rule.flexibility == Flexibility.CHANGEABLE:
+-            change = _try_move_changeable(resolver, rule, conflict)
++            change = _try_move_changeable(resolver, rule, conflict, placed)
+             if change is None:
+                 return LocalSolveResult(
+                     status="REQUIRES_AI", conflicts=conflicts,
+                     reason=f"No space on any allowed destination day for '{rule.id}'",
+                 )
+             changes.append(change)
++            placed.append(Interval(start=change.new_start, end=change.new_end, activity_id=change.activity_id))
+         elif rule.flexibility == Flexibility.FLEXIBLE:
+-            change = _try_shift_flexible(resolver, rule, conflict, new_start, new_end)
++            change = _try_shift_flexible(resolver, rule, conflict, new_start, new_end, placed)
+             if change is None:
+                 return LocalSolveResult(
+                     status="REQUIRES_AI", conflicts=conflicts,
+                     reason=f"No same-day space to shift FLEXIBLE activity '{rule.id}'",
+                 )
+             changes.append(change)
++            placed.append(Interval(start=change.new_start, end=change.new_end, activity_id=change.activity_id))
+         else:
+             return LocalSolveResult(
+                 status="REQUIRES_AI", conflicts=conflicts,
+diff -ru '--exclude=__pycache__' cal_engine/derive.py cal_engine/derive.py
+--- cal_engine/derive.py	2026-10-22 05:22:33.813481407 +0000
++++ cal_engine/derive.py	2026-10-22 05:22:00.353613475 +0000
+@@ -116,6 +116,67 @@
+     return True
+ 
+ 
++# Split sessions: a class taught over several periods is stored as several
++# rules (school__THU__ANH_VAN_1, school__THU__ANH_VAN_2). A relation should see
++# ONE anchor for the whole session, not one per period, otherwise a single
++# review/prep gets generated (and has to be entered/confirmed) per period.
++_PERIOD_SUFFIX = re.compile(r"^(?P<base>.+?)[_\-]?[Pp]?\d+$")
++MERGE_MODES = ("session", "adjacent", "none")
++DEFAULT_MERGE_GAP_MIN = 15
++
++
++def session_key(occ: dict) -> str:
++    """Identity of the session an occurrence belongs to: its explicit group if
++    the rule has one, else the rule id minus a trailing period number."""
++    if occ["group"] != occ["rule_id"]:
++        return occ["group"]
++    m = _PERIOD_SUFFIX.match(occ["rule_id"])
++    return m.group("base") if m else occ["rule_id"]
++
++
++def coalesce_occurrences(occs: list[dict], mode: str = "session",
++                         max_gap_min: int = DEFAULT_MERGE_GAP_MIN) -> list[dict]:
++    """Merge occurrences on the same date that touch or sit within max_gap_min.
++
++    mode "session":  only occurrences with the same session_key merge (default).
++    mode "adjacent": any back-to-back occurrences merge into one block.
++    mode "none":     no merging.
++
++    The merged anchor keeps the first member's occ_id/rule_id (stable when a
++    period is added later) and records every member in `members`/`rule_ids`.
++    """
++    if mode not in MERGE_MODES:
++        raise ValueError(f"unknown merge mode {mode!r}; expected one of {MERGE_MODES}")
++    if mode == "none":
++        return list(occs)
++    out: list[dict] = []
++    open_block: dict[tuple, dict] = {}
++    for o in sorted(occs, key=lambda x: (x["date"], x["start"], x["end"], x["rule_id"])):
++        key = (o["date"], session_key(o) if mode == "session" else None)
++        cur = open_block.get(key)
++        if cur is not None and o["start"] - cur["end"] <= max_gap_min:
++            cur["end"] = max(cur["end"], o["end"])
++            cur["members"].append(o["occ_id"])
++            cur["rule_ids"].append(o["rule_id"])
++            cur["tags"] = sorted(set(cur["tags"]) | set(o["tags"]))
++        else:
++            cur = {**o, "tags": list(o["tags"]), "members": [o["occ_id"]], "rule_ids": [o["rule_id"]]}
++            open_block[key] = cur
++            out.append(cur)
++    return out
++
++
++def _merge_settings(rel: dict) -> tuple[str, int]:
++    mode = rel.get("merge", "session")
++    if mode is False:
++        mode = "none"
++    elif mode is True:
++        mode = "session"
++    gap = rel.get("merge_gap")
++    gap_min = DEFAULT_MERGE_GAP_MIN if gap is None else int(parse_duration(gap).total_seconds() // 60)
++    return mode, gap_min
++
++
+ def _instances(rel: dict, occ: dict) -> list[dict]:
+     base = datetime.combine(occ["date"], time.min)
+     a_start = base + timedelta(minutes=occ["start"])
+@@ -128,6 +189,7 @@
+         "rule_id": rel["id"],
+         "anchor_id": occ["occ_id"],
+         "anchor_rule": occ["rule_id"],
++        "anchor_members": list(occ.get("members", [occ["occ_id"]])),
+         "group": rel.get("group") or occ["group"],
+         "tags": sorted(set(occ["tags"]) | set(rel.get("tags", [])) | {"derived"}),
+         "flexibility": rel.get("flexibility", "FLEXIBLE"),
+@@ -160,12 +222,11 @@
+         sel = rel.get("from") or {}
+         if not any(k in sel for k in ("match_tags", "match_group", "match_ids")):
+             raise ValueError(f"relation {rel['id']!r}: 'from' needs match_tags, match_group or match_ids")
+-        n = 0
+-        for occ in occurrences:
+-            if matches(sel, occ):
+-                n += 1
+-                out.extend(_instances(rel, occ))
+-        stats[rel["id"]] = n
++        matched = [occ for occ in occurrences if matches(sel, occ)]
++        mode, gap_min = _merge_settings(rel)
++        for occ in coalesce_occurrences(matched, mode, gap_min):
++            out.extend(_instances(rel, occ))
++        stats[rel["id"]] = len(matched)  # raw anchors matched; 0 still triggers the warning
+     return out, stats
+ 
+ 
+diff -ru '--exclude=__pycache__' cal_engine/operations.py cal_engine/operations.py
+--- cal_engine/operations.py	2026-10-22 05:22:33.814590539 +0000
++++ cal_engine/operations.py	2026-10-22 05:21:19.548238155 +0000
+@@ -36,13 +36,22 @@
+         raise OperationError(f"Time range must end after it starts: {window.start_time}-{window.end_time}.")
+     return start, end
+ 
+-def _has_concrete_time(rule: ActivityRule) -> bool:
++def has_concrete_time(rule: ActivityRule) -> bool:
+     return (
+         rule.time_constraints.fixed_interval is not None
+         or bool(rule.time_constraints.day_time_windows)
+     )
+ 
+ 
++_has_concrete_time = has_concrete_time  # backwards-compatible alias
++
++
++def window_for(rule: ActivityRule, day: date) -> Optional[TimeWindow]:
++    """The window that applies on `day`: per-weekday window first, else fixed_interval."""
++    tc = rule.time_constraints
++    return tc.day_time_windows.get(day_code_for(day)) or tc.fixed_interval
++
++
+ def _rule_occurs(rule: ActivityRule, target: date) -> bool:
+     recurrence = rule.recurrence
+     if recurrence.valid_from and target < date.fromisoformat(recurrence.valid_from):
+@@ -226,6 +235,7 @@
+         updated.time_constraints.fixed_interval = TimeWindow(
+             start_time=start.strftime("%H:%M"), end_time=end.strftime("%H:%M")
+         )
++        updated.time_constraints.day_time_windows = {}  # otherwise a weekday window would override the new time
+         if hasattr(updated.time_constraints, "date"):
+             updated.time_constraints.date = start.date().isoformat()
+         state.replace_rule(updated)
+@@ -275,11 +285,12 @@
+     on_date: date,
+     action: str,
+ ) -> OperationResult:
+-    if not _has_concrete_time(rule):
++    window = window_for(rule, on_date) if has_concrete_time(rule) else None
++    if window is None:
+         candidate = state.copy()
+         candidate.add_rule(rule)
+         return _result(candidate, "ADDED_UNPLACED", action, rule.id)
+-    start, end = _window_interval(rule.time_constraints.fixed_interval, on_date)
++    start, end = _window_interval(window, on_date)
+     _validate_rule_constraints(rule, start, end)
+     local = resolve_conflict_locally(state.resolver(), rule, on_date)
+     if local.status == "REQUIRES_AI":
+@@ -305,7 +316,7 @@
+         raise OperationError(f"Activity '{rule.id}' already exists.")
+     effective_date = target_date or (
+         first_occurrence(rule, reference_date)
+-        if rule.time_constraints.fixed_interval
++        if has_concrete_time(rule)
+         else reference_date
+     )
+     return _insert_resolved_activity(state, rule, effective_date, "ADD")
+@@ -322,7 +333,7 @@
+     base.remove_rule(updated_rule.id)
+     effective_date = (
+         first_occurrence(updated_rule, reference_date, target_date)
+-        if updated_rule.time_constraints.fixed_interval is not None
++        if has_concrete_time(updated_rule)
+         else (target_date or reference_date)
+     )
+     return _insert_resolved_activity(base, updated_rule, effective_date, "CHANGE")
+@@ -379,6 +390,7 @@
+     )
+     candidate_rule = copy.deepcopy(rule)
+     candidate_rule.time_constraints.fixed_interval = window
++    candidate_rule.time_constraints.day_time_windows = {}  # the exception window must win
+     local = resolve_conflict_locally(temporary.resolver(), candidate_rule, target_date)
+     if local.status == "REQUIRES_AI":
+         return _result(state.copy(), local.status, action.value, activity_id, local)
+@@ -403,7 +415,7 @@
+ 
+ 
+ def preview_activity(state: CalendarState, rule: ActivityRule, on_date: date) -> OperationResult:
+-    if not _has_concrete_time(rule):
++    if window_for(rule, on_date) is None:
+         return _result(state.copy(), "UNPLACED", "PREVIEW", rule.id)
+     local = resolve_conflict_locally(state.resolver(), rule, on_date)
+     return _result(state.copy(), local.status, "PREVIEW", rule.id, local)
+diff -ru '--exclude=__pycache__' cal_engine/resolution.py cal_engine/resolution.py
+--- cal_engine/resolution.py	2026-10-22 05:22:33.815279779 +0000
++++ cal_engine/resolution.py	2026-10-22 05:21:07.108972278 +0000
+@@ -15,6 +15,7 @@
+     apply_schedule_changes,
+     assert_no_overlaps,
+     first_occurrence,
++    has_concrete_time,
+     is_protected,
+     proposed_change_to_dict,
+ )
+@@ -118,7 +119,7 @@
+         parsed = parse_command(raw_command, self.reference_date)
+         if isinstance(parsed, CalendarException):
+             raise ResolutionError("The transaction request must add an ActivityRule, not an exception.")
+-        if parsed.time_constraints.fixed_interval is not None:
++        if has_concrete_time(parsed):
+             effective_date = first_occurrence(parsed, self.reference_date, target_date)
+             local = resolve_conflict_locally(self.calendar.resolver(), parsed, effective_date)
+         else:
+diff -ru '--exclude=__pycache__' cal_engine/review.py cal_engine/review.py
+--- cal_engine/review.py	2026-10-22 05:22:33.815722611 +0000
++++ cal_engine/review.py	2026-10-22 05:21:29.840649355 +0000
+@@ -159,79 +159,79 @@
+ 
+     # --- derived
+     # --- derived activities and coordinated placement
+-        out.append("[DERIVED ACTIVITIES]")
++    out.append("[DERIVED ACTIVITIES]")
+ 
+-        for rid, n in matched.items():
+-            if n == 0:
+-                out.append(
+-                    f"WARNING: relation {rid!r} matched 0 anchors "
+-                    "(check the tags, groups, or IDs selected by this relation)"
+-                )
+-
+-        for inst in derived:
+-            dur = inst["duration"]
+-            n = (
+-                len(candidate_slots(inst, usable))
+-                if not profile.is_empty
+-                else None
+-            )
+-            cand = (
+-                "availability unknown"
+-                if n is None
+-                else ("NO CANDIDATE SLOT" if n == 0 else f"{n} candidate slots")
+-            )
++    for rid, n in matched.items():
++        if n == 0:
+             out.append(
+-                f"- {inst['instance_id']} | "
+-                f"group {inst['group']} | "
+-                f"{inst['relation']} {inst['anchor_id']} | "
+-                f"{dur['min']}/{dur['ideal']}/{dur['max']} min | "
+-                f"{inst['flexibility']} {inst['priority']} | {cand}"
++                f"WARNING: relation {rid!r} matched 0 anchors "
++                "(check the tags, groups, or IDs selected by this relation)"
+             )
+ 
+-        if not derived:
+-            out.append("(none)")
++    for inst in derived:
++        dur = inst["duration"]
++        n = (
++            len(candidate_slots(inst, usable))
++            if not profile.is_empty
++            else None
++        )
++        cand = (
++            "availability unknown"
++            if n is None
++            else ("NO CANDIDATE SLOT" if n == 0 else f"{n} candidate slots")
++        )
++        out.append(
++            f"- {inst['instance_id']} | "
++            f"group {inst['group']} | "
++            f"{inst['relation']} {inst['anchor_id']} | "
++            f"{dur['min']}/{dur['ideal']}/{dur['max']} min | "
++            f"{inst['flexibility']} {inst['priority']} | {cand}"
++        )
++
++    if not derived:
++        out.append("(none)")
++
++    out.append(f"-- {len(derived)} derived activities")
++
++    out.append("")
++    out.append("[PROPOSED PLAN]")
++
++    if plan is None:
++        out.append(
++            "No plan generated: availability is unknown. "
++            "Add a profile before treating gaps as usable."
++        )
++    else:
++        for item in plan["placements"]:
++            inst = item["instance"]
++            out.append(
++                f"- {item['start']:%a %Y-%m-%d %H:%M}"
++                f"-{item['end']:%H:%M} | "
++                f"{inst['instance_id']} | "
++                f"{inst['priority']} | "
++                f"{item['duration_minutes']} min"
++            )
+ 
+-        out.append(f"-- {len(derived)} derived activities")
++        if not plan["placements"]:
++            out.append("(no activities placed)")
+ 
+         out.append("")
+-        out.append("[PROPOSED PLAN]")
++        out.append("[UNSCHEDULED ACTIVITIES]")
+ 
+-        if plan is None:
++        for item in plan["unscheduled"]:
++            inst = item["instance"]
+             out.append(
+-                "No plan generated: availability is unknown. "
+-                "Add a profile before treating gaps as usable."
++                f"- {inst['instance_id']} | "
++                f"{inst['priority']} | {item['reason']}"
+             )
+-        else:
+-            for item in plan["placements"]:
+-                inst = item["instance"]
+-                out.append(
+-                    f"- {item['start']:%a %Y-%m-%d %H:%M}"
+-                    f"-{item['end']:%H:%M} | "
+-                    f"{inst['instance_id']} | "
+-                    f"{inst['priority']} | "
+-                    f"{item['duration_minutes']} min"
+-                )
+-
+-            if not plan["placements"]:
+-                out.append("(no activities placed)")
+-
+-            out.append("")
+-            out.append("[UNSCHEDULED ACTIVITIES]")
+-
+-            for item in plan["unscheduled"]:
+-                inst = item["instance"]
+-                out.append(
+-                    f"- {inst['instance_id']} | "
+-                    f"{inst['priority']} | {item['reason']}"
+-                )
+ 
+-            if not plan["unscheduled"]:
+-                out.append("(all generated activities were placed)")
++        if not plan["unscheduled"]:
++            out.append("(all generated activities were placed)")
+ 
+-            out.append(
+-                f"-- {len(plan['placements'])} placed, "
+-                f"{len(plan['unscheduled'])} unscheduled"
+-            )
++        out.append(
++            f"-- {len(plan['placements'])} placed, "
++            f"{len(plan['unscheduled'])} unscheduled"
++        )
+ 
+     if save_snapshot:
+         snap_file.write_text(json.dumps({

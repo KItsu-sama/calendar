@@ -116,6 +116,67 @@ def matches(selector: dict, occ: dict) -> bool:
     return True
 
 
+# Split sessions: a class taught over several periods is stored as several
+# rules (school__THU__ANH_VAN_1, school__THU__ANH_VAN_2). A relation should see
+# ONE anchor for the whole session, not one per period, otherwise a single
+# review/prep gets generated (and has to be entered/confirmed) per period.
+_PERIOD_SUFFIX = re.compile(r"^(?P<base>.+?)[_\-]?[Pp]?\d+$")
+MERGE_MODES = ("session", "adjacent", "none")
+DEFAULT_MERGE_GAP_MIN = 15
+
+
+def session_key(occ: dict) -> str:
+    """Identity of the session an occurrence belongs to: its explicit group if
+    the rule has one, else the rule id minus a trailing period number."""
+    if occ["group"] != occ["rule_id"]:
+        return occ["group"]
+    m = _PERIOD_SUFFIX.match(occ["rule_id"])
+    return m.group("base") if m else occ["rule_id"]
+
+
+def coalesce_occurrences(occs: list[dict], mode: str = "session",
+                         max_gap_min: int = DEFAULT_MERGE_GAP_MIN) -> list[dict]:
+    """Merge occurrences on the same date that touch or sit within max_gap_min.
+
+    mode "session":  only occurrences with the same session_key merge (default).
+    mode "adjacent": any back-to-back occurrences merge into one block.
+    mode "none":     no merging.
+
+    The merged anchor keeps the first member's occ_id/rule_id (stable when a
+    period is added later) and records every member in `members`/`rule_ids`.
+    """
+    if mode not in MERGE_MODES:
+        raise ValueError(f"unknown merge mode {mode!r}; expected one of {MERGE_MODES}")
+    if mode == "none":
+        return list(occs)
+    out: list[dict] = []
+    open_block: dict[tuple, dict] = {}
+    for o in sorted(occs, key=lambda x: (x["date"], x["start"], x["end"], x["rule_id"])):
+        key = (o["date"], session_key(o) if mode == "session" else None)
+        cur = open_block.get(key)
+        if cur is not None and o["start"] - cur["end"] <= max_gap_min:
+            cur["end"] = max(cur["end"], o["end"])
+            cur["members"].append(o["occ_id"])
+            cur["rule_ids"].append(o["rule_id"])
+            cur["tags"] = sorted(set(cur["tags"]) | set(o["tags"]))
+        else:
+            cur = {**o, "tags": list(o["tags"]), "members": [o["occ_id"]], "rule_ids": [o["rule_id"]]}
+            open_block[key] = cur
+            out.append(cur)
+    return out
+
+
+def _merge_settings(rel: dict) -> tuple[str, int]:
+    mode = rel.get("merge", "session")
+    if mode is False:
+        mode = "none"
+    elif mode is True:
+        mode = "session"
+    gap = rel.get("merge_gap")
+    gap_min = DEFAULT_MERGE_GAP_MIN if gap is None else int(parse_duration(gap).total_seconds() // 60)
+    return mode, gap_min
+
+
 def _instances(rel: dict, occ: dict) -> list[dict]:
     base = datetime.combine(occ["date"], time.min)
     a_start = base + timedelta(minutes=occ["start"])
@@ -128,6 +189,7 @@ def _instances(rel: dict, occ: dict) -> list[dict]:
         "rule_id": rel["id"],
         "anchor_id": occ["occ_id"],
         "anchor_rule": occ["rule_id"],
+        "anchor_members": list(occ.get("members", [occ["occ_id"]])),
         "group": rel.get("group") or occ["group"],
         "tags": sorted(set(occ["tags"]) | set(rel.get("tags", [])) | {"derived"}),
         "flexibility": rel.get("flexibility", "FLEXIBLE"),
@@ -160,12 +222,11 @@ def generate_derived(relations: list[dict], occurrences: list[dict]) -> tuple[li
         sel = rel.get("from") or {}
         if not any(k in sel for k in ("match_tags", "match_group", "match_ids")):
             raise ValueError(f"relation {rel['id']!r}: 'from' needs match_tags, match_group or match_ids")
-        n = 0
-        for occ in occurrences:
-            if matches(sel, occ):
-                n += 1
-                out.extend(_instances(rel, occ))
-        stats[rel["id"]] = n
+        matched = [occ for occ in occurrences if matches(sel, occ)]
+        mode, gap_min = _merge_settings(rel)
+        for occ in coalesce_occurrences(matched, mode, gap_min):
+            out.extend(_instances(rel, occ))
+        stats[rel["id"]] = len(matched)  # raw anchors matched; 0 still triggers the warning
     return out, stats
 
 

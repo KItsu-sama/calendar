@@ -159,79 +159,79 @@ def run_review(state_path, profile_path=None, relations_path=None, on: date | No
 
     # --- derived
     # --- derived activities and coordinated placement
-        out.append("[DERIVED ACTIVITIES]")
+    out.append("[DERIVED ACTIVITIES]")
 
-        for rid, n in matched.items():
-            if n == 0:
-                out.append(
-                    f"WARNING: relation {rid!r} matched 0 anchors "
-                    "(check the tags, groups, or IDs selected by this relation)"
-                )
-
-        for inst in derived:
-            dur = inst["duration"]
-            n = (
-                len(candidate_slots(inst, usable))
-                if not profile.is_empty
-                else None
-            )
-            cand = (
-                "availability unknown"
-                if n is None
-                else ("NO CANDIDATE SLOT" if n == 0 else f"{n} candidate slots")
-            )
+    for rid, n in matched.items():
+        if n == 0:
             out.append(
-                f"- {inst['instance_id']} | "
-                f"group {inst['group']} | "
-                f"{inst['relation']} {inst['anchor_id']} | "
-                f"{dur['min']}/{dur['ideal']}/{dur['max']} min | "
-                f"{inst['flexibility']} {inst['priority']} | {cand}"
+                f"WARNING: relation {rid!r} matched 0 anchors "
+                "(check the tags, groups, or IDs selected by this relation)"
             )
 
-        if not derived:
-            out.append("(none)")
+    for inst in derived:
+        dur = inst["duration"]
+        n = (
+            len(candidate_slots(inst, usable))
+            if not profile.is_empty
+            else None
+        )
+        cand = (
+            "availability unknown"
+            if n is None
+            else ("NO CANDIDATE SLOT" if n == 0 else f"{n} candidate slots")
+        )
+        out.append(
+            f"- {inst['instance_id']} | "
+            f"group {inst['group']} | "
+            f"{inst['relation']} {inst['anchor_id']} | "
+            f"{dur['min']}/{dur['ideal']}/{dur['max']} min | "
+            f"{inst['flexibility']} {inst['priority']} | {cand}"
+        )
 
-        out.append(f"-- {len(derived)} derived activities")
+    if not derived:
+        out.append("(none)")
+
+    out.append(f"-- {len(derived)} derived activities")
+
+    out.append("")
+    out.append("[PROPOSED PLAN]")
+
+    if plan is None:
+        out.append(
+            "No plan generated: availability is unknown. "
+            "Add a profile before treating gaps as usable."
+        )
+    else:
+        for item in plan["placements"]:
+            inst = item["instance"]
+            out.append(
+                f"- {item['start']:%a %Y-%m-%d %H:%M}"
+                f"-{item['end']:%H:%M} | "
+                f"{inst['instance_id']} | "
+                f"{inst['priority']} | "
+                f"{item['duration_minutes']} min"
+            )
+
+        if not plan["placements"]:
+            out.append("(no activities placed)")
 
         out.append("")
-        out.append("[PROPOSED PLAN]")
+        out.append("[UNSCHEDULED ACTIVITIES]")
 
-        if plan is None:
+        for item in plan["unscheduled"]:
+            inst = item["instance"]
             out.append(
-                "No plan generated: availability is unknown. "
-                "Add a profile before treating gaps as usable."
+                f"- {inst['instance_id']} | "
+                f"{inst['priority']} | {item['reason']}"
             )
-        else:
-            for item in plan["placements"]:
-                inst = item["instance"]
-                out.append(
-                    f"- {item['start']:%a %Y-%m-%d %H:%M}"
-                    f"-{item['end']:%H:%M} | "
-                    f"{inst['instance_id']} | "
-                    f"{inst['priority']} | "
-                    f"{item['duration_minutes']} min"
-                )
 
-            if not plan["placements"]:
-                out.append("(no activities placed)")
+        if not plan["unscheduled"]:
+            out.append("(all generated activities were placed)")
 
-            out.append("")
-            out.append("[UNSCHEDULED ACTIVITIES]")
-
-            for item in plan["unscheduled"]:
-                inst = item["instance"]
-                out.append(
-                    f"- {inst['instance_id']} | "
-                    f"{inst['priority']} | {item['reason']}"
-                )
-
-            if not plan["unscheduled"]:
-                out.append("(all generated activities were placed)")
-
-            out.append(
-                f"-- {len(plan['placements'])} placed, "
-                f"{len(plan['unscheduled'])} unscheduled"
-            )
+        out.append(
+            f"-- {len(plan['placements'])} placed, "
+            f"{len(plan['unscheduled'])} unscheduled"
+        )
 
     if save_snapshot:
         snap_file.write_text(json.dumps({

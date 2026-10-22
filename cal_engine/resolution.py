@@ -15,6 +15,7 @@ from .operations import (
     apply_schedule_changes,
     assert_no_overlaps,
     first_occurrence,
+    has_concrete_time,
     is_protected,
     proposed_change_to_dict,
 )
@@ -118,7 +119,7 @@ class ResolutionEngine:
         parsed = parse_command(raw_command, self.reference_date)
         if isinstance(parsed, CalendarException):
             raise ResolutionError("The transaction request must add an ActivityRule, not an exception.")
-        if parsed.time_constraints.fixed_interval is not None:
+        if has_concrete_time(parsed):
             effective_date = first_occurrence(parsed, self.reference_date, target_date)
             local = resolve_conflict_locally(self.calendar.resolver(), parsed, effective_date)
         else:
@@ -282,4 +283,3 @@ class ResolutionEngine:
         )
         self._remember(updated)
         return ResolutionOutcome(updated, self.calendar.copy(), self._ai_result(record))
-
