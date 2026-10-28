@@ -180,10 +180,31 @@ class UnifiedCalendarGUI:
         ttk.Label(row, text="Priority override", width=20).pack(side="left")
         ttk.Combobox(row, textvariable=self.slot_priority, values=["", "CRITICAL", "HIGH", "NORMAL", "LOW"], state="readonly").pack(side="left", fill="x", expand=True)
         ttk.Label(right, text="Group defaults").pack(anchor="w", pady=(12, 3))
-        self.group_info = tk.Text(right, height=8, wrap="word", state="disabled")
+        self.group_info = tk.Text(right, height=5, wrap="word", state="disabled")
         self.group_info.pack(fill="x")
-        ttk.Button(right, text="Export group slots to calendar", command=self._export_group).pack(fill="x", pady=(10, 3))
-        ttk.Label(right, text="Breaks are reserved defaults. Slot generation respects them; slots with no preset can be edited to custom times.", wraplength=300).pack(anchor="w", pady=4)
+        rules = ttk.LabelFrame(right, text="Edit group defaults", padding=6)
+        rules.pack(fill="x", pady=(8, 0))
+        self.rule_days = tk.StringVar()
+        self.rule_start = tk.StringVar()
+        self.rule_end = tk.StringVar()
+        self.rule_period = tk.StringVar()
+        self.break_name = tk.StringVar()
+        self.break_start = tk.StringVar()
+        self.break_end = tk.StringVar()
+        for label, var in [
+            ("Active days (MON,...)", self.rule_days),
+            ("Daily start", self.rule_start), ("Daily end", self.rule_end),
+            ("Slot length (minutes)", self.rule_period),
+            ("Default break name", self.break_name),
+            ("Break start", self.break_start), ("Break end", self.break_end),
+        ]:
+            row = ttk.Frame(rules)
+            row.pack(fill="x", pady=2)
+            ttk.Label(row, text=label, width=20).pack(side="left")
+            ttk.Entry(row, textvariable=var).pack(side="left", fill="x", expand=True)
+        ttk.Button(rules, text="Apply group rules", command=self._apply_group_rules).pack(fill="x", pady=(5, 0))
+        ttk.Button(right, text="Export group slots to calendar", command=self._export_group).pack(fill="x", pady=(8, 3))
+        ttk.Label(right, text="Breaks are reserved defaults. Slots without a preset can use custom start/end times.", wraplength=300).pack(anchor="w", pady=4)
 
     def _load_data(self):
         try:
@@ -344,6 +365,14 @@ class UnifiedCalendarGUI:
             + "Breaks: " + (", ".join(f"{b.get('name','Break')} {b['start_time']}–{b['end_time']}" for b in breaks) or "none")
         ))
         self.group_info.configure(state="disabled")
+        self.rule_days.set(",".join(schedule.get("days", [])))
+        self.rule_start.set(schedule.get("start_time", ""))
+        self.rule_end.set(schedule.get("end_time", ""))
+        self.rule_period.set(str(schedule.get("period_minutes", 45)))
+        first_break = breaks[0] if breaks else {}
+        self.break_name.set(first_break.get("name", ""))
+        self.break_start.set(first_break.get("start_time", ""))
+        self.break_end.set(first_break.get("end_time", ""))
         activities = schedule.get("activities", [])
         for day in schedule["days"]:
             cursor = _minutes(schedule["start_time"])
@@ -365,6 +394,39 @@ class UnifiedCalendarGUI:
                 cursor = slot_end
                 period += 1
         self.slot_tree.tag_configure("break", background="#eeeeee")
+
+    def _apply_group_rules(self):
+        schedule = self._selected_schedule()
+        if not schedule:
+            return messagebox.showinfo("Group rules", "Select a group first.")
+        try:
+            days = [part.strip().upper() for part in self.rule_days.get().split(",") if part.strip()]
+            if not days or any(day not in DAYS for day in days) or len(days) != len(set(days)):
+                raise ValueError("Days must be unique codes such as MON,TUE,WED,THU,FRI.")
+            start, end = self.rule_start.get().strip(), self.rule_end.get().strip()
+            if _minutes(start) >= _minutes(end):
+                raise ValueError("Daily start must be before daily end.")
+            period = int(self.rule_period.get().strip())
+            if period < 1 or period > 1440:
+                raise ValueError("Slot length must be between 1 and 1440 minutes.")
+            schedule.update({"days": days, "start_time": start, "end_time": end, "period_minutes": period})
+            name, break_start, break_end = self.break_name.get().strip(), self.break_start.get().strip(), self.break_end.get().strip()
+            if name or break_start or break_end:
+                if not (name and break_start and break_end):
+                    raise ValueError("A default break needs a name, start, and end; clear all three to remove it.")
+                if _minutes(break_start) >= _minutes(break_end):
+                    raise ValueError("Break start must be before break end.")
+                schedule["breaks"] = [{
+                    "id": "default_break", "name": name, "start_time": break_start,
+                    "end_time": break_end, "priority": "HIGH", "override_policy": "never",
+                }]
+            else:
+                schedule["breaks"] = []
+            save_config(self.config, self.config_path)
+            self._refresh_slots()
+            self.status_var.set("Group rules applied and saved.")
+        except Exception as exc:
+            messagebox.showerror("Group rules", str(exc))
 
     def _slot_selected(self, _event=None):
         selected = self.slot_tree.selection()
