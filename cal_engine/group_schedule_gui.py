@@ -1,3 +1,4 @@
+# cal_engine/group_schedule_gui.py
 """Tkinter editor for reusable groups and schedules."""
 from __future__ import annotations
 
