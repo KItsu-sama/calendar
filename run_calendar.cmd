@@ -12,14 +12,14 @@ echo ==============================
 echo       Calendar Tools
 echo ==============================
 echo 1. Open Calendar GUI
-echo 2. Open Group Schedule Editor
+echo 2. Open Calendar GUI (same editor)
 echo 3. Show CLI help
 echo 0. Exit
 echo.
 set /p "choice=Choose an option: "
 
 if "%choice%"=="1" goto calendar_gui
-if "%choice%"=="2" goto group_editor
+if "%choice%"=="2" goto calendar_gui
 if "%choice%"=="3" goto cli_help
 if "%choice%"=="0" goto end
 echo Invalid choice.
