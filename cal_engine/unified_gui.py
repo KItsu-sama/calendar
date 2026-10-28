@@ -62,6 +62,7 @@ class UnifiedCalendarGUI:
         self.view_var = tk.StringVar(value="Week")
         self.anchor_var = tk.StringVar(value=date.today().isoformat())
         self.status_var = tk.StringVar(value="Ready")
+        self.calendar_row_rule_ids: dict[str, str] = {}
         self._build()
         self._load_data()
 
@@ -108,6 +109,7 @@ class UnifiedCalendarGUI:
             self.calendar_tree.heading(col, text=label)
             self.calendar_tree.column(col, width=width, anchor="w")
         self.calendar_tree.pack(fill="both", expand=True)
+        self.calendar_tree.bind("<<TreeviewSelect>>", self._calendar_selected)
         form = ttk.LabelFrame(self.calendar_tab, text="Add event / custom time", padding=8)
         form.pack(fill="x", pady=(8, 0))
         self.event_name = tk.StringVar()
@@ -261,17 +263,44 @@ class UnifiedCalendarGUI:
             start, end = self._range()
             self.calendar_tree.delete(*self.calendar_tree.get_children())
             items = self.state.resolver().build_actual_schedule(start, end)
-            for item in items:
-                self.calendar_tree.insert("", "end", values=(
+            self.calendar_row_rule_ids.clear()
+            for index, item in enumerate(items):
+                row_id = f"event_{index}"
+                self.calendar_tree.insert("", "end", iid=row_id, values=(
                     item.start.date().isoformat(), item.start.strftime("%A"),
                     item.start.strftime("%H:%M"), item.end.strftime("%H:%M"),
                     item.name, "Calendar rule",
                 ), tags=("event",))
+                match = next((rule for rule in self.state.rules if item.name == rule.name or item.name.startswith(rule.name + " (")), None)
+                if match:
+                    self.calendar_row_rule_ids[row_id] = match.id
             if not items:
                 self.calendar_tree.insert("", "end", values=(start.isoformat(), "", "", "", "No scheduled events in this range", ""))
             self.status_var.set(f"Showing {start.isoformat()} to {end.isoformat()}")
         except Exception as exc:
             messagebox.showerror("Calendar view", str(exc))
+
+    def _calendar_selected(self, _event=None):
+        selected = self.calendar_tree.selection()
+        if not selected:
+            return
+        values = self.calendar_tree.item(selected[0], "values")
+        if not values or len(values) < 5 or not values[0]:
+            return
+        self.event_date.set(values[0])
+        self.event_name.set(values[4])
+        self.event_start.set(values[2])
+        self.event_end.set(values[3])
+        rule_id = self.calendar_row_rule_ids.get(selected[0])
+        rule = next((item for item in self.state.rules if item.id == rule_id), None)
+        if rule:
+            if rule.recurrence.type == RecurrenceType.NONE:
+                self.event_repeat.set("Selected date")
+            elif rule.recurrence.type == RecurrenceType.DAILY:
+                self.event_repeat.set("Every day")
+            else:
+                self.event_repeat.set("Every week")
+            self.event_priority.set(rule.priority.value)
 
     def _today(self):
         self.anchor_var.set(date.today().isoformat())
@@ -291,19 +320,35 @@ class UnifiedCalendarGUI:
             if repeat == "Selected date":
                 recurrence = Recurrence(type=RecurrenceType.NONE)
                 constraints = TimeConstraints(fixed_interval=TimeWindow(start, end), date=target.isoformat())
-                rule_id = f"custom__{target.isoformat().replace('-', '')}__{len(self.state.rules)+1}"
             elif repeat == "Every day":
                 recurrence = Recurrence(type=RecurrenceType.DAILY)
                 constraints = TimeConstraints(fixed_interval=TimeWindow(start, end))
-                rule_id = f"custom_daily__{len(self.state.rules)+1}"
             else:
                 recurrence = Recurrence(type=RecurrenceType.WEEKLY, days_of_week=[DAYS[target.weekday()]])
                 constraints = TimeConstraints(fixed_interval=TimeWindow(start, end))
-                rule_id = f"custom_weekly__{len(self.state.rules)+1}"
-            rule = ActivityRule(id=rule_id, name=name, flexibility=Flexibility.FIXED,
-                priority=Priority(self.event_priority.get()), recurrence=recurrence, time_constraints=constraints)
+
+            selected_rows = self.calendar_tree.selection()
+            selected_rule_id = self.calendar_row_rule_ids.get(selected_rows[0]) if selected_rows else None
             candidate = copy.deepcopy(self.state)
-            candidate.rules.append(rule)
+            existing = next((item for item in candidate.rules if item.id == selected_rule_id), None)
+            if existing and existing.id.startswith("group_schedule__"):
+                raise ValueError("This event belongs to a group template. Edit it in Groups & slots so the reusable rules stay consistent.")
+            if existing:
+                existing.name = name
+                existing.priority = Priority(self.event_priority.get())
+                existing.recurrence = recurrence
+                existing.time_constraints = constraints
+                rule_id = existing.id
+            else:
+                prefix = "custom__" if repeat == "Selected date" else ("custom_daily__" if repeat == "Every day" else "custom_weekly__")
+                suffix = 1
+                existing_ids = {item.id for item in candidate.rules}
+                rule_id = f"{prefix}{target.isoformat().replace('-', '')}__{suffix}"
+                while rule_id in existing_ids:
+                    suffix += 1
+                    rule_id = f"{prefix}{target.isoformat().replace('-', '')}__{suffix}"
+                candidate.rules.append(ActivityRule(id=rule_id, name=name, flexibility=Flexibility.FIXED,
+                    priority=Priority(self.event_priority.get()), recurrence=recurrence, time_constraints=constraints))
             candidate._validate()
             self.state = candidate
             self._save_calendar()
