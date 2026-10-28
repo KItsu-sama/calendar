@@ -2,6 +2,7 @@
 .venv/
 venv/
 __pycache__/
+cal_engine/__pycache__/
 *.py[cod]
 .pytest_cache/
 .coverage
@@ -13,3 +14,4 @@ data/*
 schedule.txt
 cal_changes.jsonl
 calendar.json
+school_schedule.txt

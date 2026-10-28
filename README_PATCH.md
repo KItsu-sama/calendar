@@ -1,6 +1,6 @@
 # Calendar Group & Schedule Editor — additive local patch
 
-This patch adds an editable Tkinter Group/Schedule editor and a bridge to the existing version-1 `calendar.json` format. It does not modify GitHub and does not replace your current `cal_engine/gui.py`.
+This patch adds an editable Tkinter Group/Schedule editor and a bridge to the existing version-1 `calendar.json` format. It does not modify GitHub and does not replace current `cal_engine/gui.py`.
 
 ## Files
 - `cal_engine/group_schedule.py` — config validation, load/save, timetable-to-calendar export.
@@ -9,7 +9,6 @@ This patch adds an editable Tkinter Group/Schedule editor and a bridge to the ex
 - `examples/groups_schedules.school.json` — example config shell; the editor's built-in default contains all 25 lesson entries.
 
 ## Install locally
-Copy the two Python files into your existing repository's `cal_engine/` folder. Copy the `.cmd` launcher into the repository root. Do not overwrite existing files.
 
 Run from the repository root:
 
