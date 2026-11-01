@@ -202,6 +202,7 @@ def _run_week(
 
     return 0
 
+#TODO : at some point need a master parser so i can safely expand the CLI with new commands without breaking existing usage with sub parsers. For now, just parse the direct action and then parse the rest of the args for that action.
 def _direct_parser(action: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=f"python main.py {action}")
     parser.add_argument("name", help="Activity ID")
