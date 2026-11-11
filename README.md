@@ -40,13 +40,13 @@ python main.py group-schedule --export-config groups_schedules.json --calendar c
 
 - `group-schedule` opens an empty editor. Add groups and schedules explicitly, or open an existing configuration file.
 - `--export-config FILE --calendar FILE` exports the configured timetable while retaining unrelated calendar rules.
-- Run `run_calendar.cmd` to open the combined Windows menu. The older `run_gui.cmd` and `run_group_schedule_editor.cmd` launchers remain available and route through it.
+- Run `run_calendar.cmd` to open the combined Windows menu.
 
 
 
 ## Unified calendar GUI
 
-Run `python main.py gui` (or `run_gui.cmd`) to open the unified desktop editor. The same editor is launched by `python main.py group-schedule` and the legacy group launcher.
+Run `python main.py gui` to open the unified desktop editor. The same editor is launched by `python main.py group-schedule`.
 
 - **Calendar**: switch between week and month ranges, inspect scheduled events, add one-off or repeating events with custom start/end times, and remove rules.
 - **Groups & slots**: explicitly add the School starter template or a blank group, generate slots from active days, daily start/end, slot duration, and a default break, then assign a subject by selecting a slot and clicking Apply.

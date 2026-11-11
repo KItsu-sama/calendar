@@ -5,7 +5,7 @@ This patch adds an editable Tkinter Group/Schedule editor and a bridge to the ex
 ## Files
 - `cal_engine/group_schedule.py` — config validation, load/save, timetable-to-calendar export.
 - `cal_engine/group_schedule_gui.py` — editable desktop UI.
-- `run_group_schedule_editor.cmd` — Windows launcher.
+- `run_calendar.cmd` — Windows launcher (use the `group` argument to open the group editor).
 - `examples/groups_schedules.school.json` — example config shell; the editor's built-in default contains all 25 lesson entries.
 
 ## Install locally
@@ -16,7 +16,7 @@ Run from the repository root:
 python -m cal_engine.group_schedule_gui
 ```
 
-or double-click `run_group_schedule_editor.cmd` after copying it to the repository root.
+or double-click `run_calendar.cmd group` after copying it to the repository root.
 
 ## Workflow
 1. Edit Group defaults (priority, flexibility, override policy).
