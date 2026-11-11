@@ -1,6 +1,6 @@
 # Calendar Group & Schedule Editor — additive local patch
 
-This patch adds an editable Tkinter Group/Schedule editor and a bridge to the existing version-1 `calendar.json` format. It does not modify GitHub and does not replace current `cal_engine/gui.py`.
+This patch adds an editable Tkinter Group/Schedule editor and a bridge to the existing version-1 `data/calendar.json` format. It does not modify GitHub and does not replace current `cal_engine/gui.py`.
 
 ## Files
 - `cal_engine/group_schedule.py` — config validation, load/save, timetable-to-calendar export.
@@ -23,7 +23,7 @@ or double-click `run_calendar.cmd group` after copying it to the repository root
 2. Edit Schedule settings (group, days, time range, period duration).
 3. Select a schedule and edit individual activities in the table; blank activity priority means inherit from its group.
 4. Save the group/schedule config to `groups_schedules.json`.
-5. Use **Export to calendar.json…** to merge generated timetable rules into an existing calendar file.
+5. Use **Export to data/calendar.json…** to merge generated timetable rules into an existing calendar file.
 
 The exporter reserves IDs starting with `school_timetable__`. On later exports, only previously generated rules with that prefix are replaced; unrelated rules are retained. Exceptions tied to generated rules are removed when those generated rules are replaced.
 

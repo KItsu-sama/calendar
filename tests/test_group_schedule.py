@@ -55,7 +55,7 @@ def test_empty_configuration_is_valid_and_has_no_implicit_timetable():
 
 def test_config_round_trip_and_export_preserves_existing_calendar_rules(tmp_path):
     config_path = tmp_path / "groups_schedules.json"
-    calendar_path = tmp_path / "calendar.json"
+    calendar_path = tmp_path / "data/data/calendar.json"
 
     config = _explicit_test_config()
     save_config(config, config_path)

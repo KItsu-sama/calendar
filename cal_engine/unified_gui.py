@@ -223,7 +223,7 @@ class UnifiedCalendarGUI:
         root.minsize(1020, 640)
         self.k = max(1.0, root.winfo_fpixels("1i") / 96.0)
 
-        self.calendar_path = Path("calendar.json")
+        self.calendar_path = Path("data/data/calendar.json")
         self.config_path = Path("groups_schedules.json")
         self.state = CalendarState()
         self.config: dict[str, Any] = {"version": 1, "groups": [], "schedules": []}
@@ -647,7 +647,7 @@ class UnifiedCalendarGUI:
         self.status_var.set(f"Undone  ·  saved {datetime.now():%H:%M}")
 
     def _sync_timetables(self) -> int:
-        """Write the group timetables into calendar.json and reload it."""
+        """Write the group timetables into data/data/calendar.json and reload it."""
         count = export_to_calendar(self.config, self.calendar_path)
         self.state = CalendarState.load(self.calendar_path)
         return count

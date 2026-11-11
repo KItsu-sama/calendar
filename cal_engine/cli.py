@@ -555,8 +555,8 @@ def _execute(argv: list[str]) -> int:
         )
         group_parser.add_argument(
             "--calendar",
-            default="calendar.json",
-            help="Calendar JSON destination for --export-config (default: calendar.json).",
+            default="data/data/data/calendar.json",
+            help="Calendar JSON destination for --export-config (default: data/data/calendar.json).",
         )
         group_args = group_parser.parse_args(argv[1:])
         from .group_schedule import load_config, export_to_calendar
@@ -633,7 +633,7 @@ def _execute(argv: list[str]) -> int:
         if len(remaining) != 1:
             raise CLIError(
                 "Batch requires exactly one schedule file.\n"
-                "Example: python main.py --save calendar.json --batch schedule.txt"
+                "Example: python main.py --save data/data/calendar.json --batch schedule.txt"
             )
 
         reference = _parse_cli_date(
@@ -698,9 +698,9 @@ def _execute(argv: list[str]) -> int:
     if (
         action == "--generate-prompt"
         and not state_path
-        and Path("calendar.json").is_file()
+        and Path("data/data/calendar.json").is_file()
     ):
-        state_path = "calendar.json"
+        state_path = "data/data/calendar.json"
 
     state = CalendarState.load(state_path) if state_path else CalendarState()
 
@@ -713,8 +713,8 @@ def _execute(argv: list[str]) -> int:
             raise CLIError(
                 "Reset requires --save so you explicitly choose "
                 "which calendar file to clear.\n"
-                "Example: python main.py --load calendar.json "
-                "--reset --save calendar.json"
+                "Example: python main.py --load data/data/calendar.json "
+                "--reset --save data/data/calendar.json"
             )
 
         old_activity_ids = [rule.id for rule in state.rules]
