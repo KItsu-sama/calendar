@@ -2,6 +2,14 @@
 setlocal
 cd /d "%~dp0"
 
+call "%~dp0setup_calendar.cmd"
+if errorlevel 1 (
+    echo.
+    echo Calendar setup failed. Please review the message above.
+    pause
+    exit /b 1
+)
+
 if /I "%~1"=="gui" goto calendar_gui
 if /I "%~1"=="group" goto group_editor
 
@@ -12,17 +20,26 @@ echo ==============================
 echo       Calendar Tools
 echo ==============================
 echo 1. Open Calendar GUI
-echo 2. Open Calendar GUI (same editor)
+echo 2. CMD to add command
 echo 3. Show CLI help
 echo 0. Exit
 echo.
 set /p "choice=Choose an option: "
 
 if "%choice%"=="1" goto calendar_gui
-if "%choice%"=="2" goto calendar_gui
+if "%choice%"=="2" goto cmd
 if "%choice%"=="3" goto cli_help
 if "%choice%"=="0" goto end
 echo Invalid choice.
+goto menu
+
+:cmd
+echo.
+set /p "user_cmd= > "
+echo.
+python main.py %user_cmd%
+echo.
+pause
 goto menu
 
 :calendar_gui
@@ -47,7 +64,15 @@ goto end
 :cli_help
 python main.py --help
 pause
-goto end
+goto menu
+
+:exit
+echo.
+set /p "exit=done? (y/n)[y]: "
+echo.
+if /I "%exit%"=="n" goto menu
+pause
+else end
 
 :end
 endlocal

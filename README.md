@@ -80,11 +80,15 @@ protected time and buffers before treating gaps as usable planning blocks.
 - `jsonschema` for the engine's model validation.
 - `pytest` to run the test suite.
 
-There is no dependency manifest in the repository at present. Install the
-runtime and test dependencies with:
+The Windows launcher checks for runtime dependencies on startup and installs
+any missing packages listed in `requirements.txt`. To run setup separately,
+launch `setup_calendar.cmd`. The setup script requires Python 3.10 or later
+available as `python`.
+
+Install the runtime dependency manually with:
 
 ```powershell
-python -m pip install jsonschema pytest
+python -m pip install -r requirements.txt
 ```
 
 ### Clone and install
@@ -92,7 +96,7 @@ python -m pip install jsonschema pytest
 ```powershell
 git clone https://github.com/KItsu-sama/calendar.git
 cd calendar
-python -m pip install jsonschema
+python -m pip install -r requirements.txt
 ```
 
 Add `pytest` if you plan to run tests. You can also use an existing checkout

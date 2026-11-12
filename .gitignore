@@ -14,3 +14,5 @@ data/*
 cal_changes.jsonl
 data/calendar.json
 
+cal_engine/__pycache__/cli.cpython-314.pyc
+cal_engine/__pycache__/conflict.cpython-314.pyc
