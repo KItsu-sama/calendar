@@ -46,7 +46,7 @@ from .parser import (
 from .storage import CalendarState, StorageError
 from .review import review_args, review_handle
 
-DIRECT_ACTIONS = {
+_MASTER_ACTIONS = (
     "--add",
     "--remove",
     "--change",
@@ -58,6 +58,11 @@ DIRECT_ACTIONS = {
     "--conflicts",
     "--preview",
     "--generate-prompt",
+    "--reset",
+)
+
+DIRECT_ACTIONS = {
+    *_MASTER_ACTIONS,
 
     "--batch",
     "batch",
@@ -73,6 +78,7 @@ DIRECT_ACTIONS = {
     "--profile",
     "--relations",
     "--no-snapshot",
+    "--check",
 }
 
 
@@ -202,7 +208,6 @@ def _run_week(
 
     return 0
 
-#TODO : at some point need a master parser so i can safely expand the CLI with new commands without breaking existing usage with sub parsers. For now, just parse the direct action and then parse the rest of the args for that action.
 def _direct_parser(action: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=f"python main.py {action}")
     parser.add_argument("name", help="Activity ID")
@@ -238,6 +243,50 @@ def _query_parser(action: str) -> argparse.ArgumentParser:
     parser.add_argument("--on", dest="target")
     parser.add_argument("--time", help="Existing conflict window for --conflicts.")
     return parser
+
+
+def _master_parser() -> argparse.ArgumentParser:
+    parser = _global_parser()
+    commands = parser.add_subparsers(dest="command")
+    for action in _MASTER_ACTIONS:
+        command = commands.add_parser(action[2:], add_help=False)
+        command.add_argument("tokens", nargs=argparse.REMAINDER)
+    return parser
+
+
+def _master_action_index(argv: list[str]) -> tuple[int, str] | None:
+    """Find a direct action after the leading global options and their values."""
+    global_parser = _global_parser()
+    option_actions = global_parser._option_string_actions
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token in _MASTER_ACTIONS:
+            return index, token
+
+        option = token.partition("=")[0]
+        parsed_action = option_actions.get(option)
+        if parsed_action is None and option.startswith("--"):
+            matches = [
+                action
+                for option_string, action in option_actions.items()
+                if option_string.startswith(option)
+            ]
+            if len(matches) == 1:
+                parsed_action = matches[0]
+        if parsed_action is None:
+            return None
+        if "=" in token or parsed_action.nargs == 0:
+            index += 1
+        elif parsed_action.nargs == "?":
+            index += 1
+            if index < len(argv) and not argv[index].startswith("-"):
+                index += 1
+        elif isinstance(parsed_action.nargs, int):
+            index += 1 + parsed_action.nargs
+        else:
+            index += 2
+    return None
 
 
 def _updated_rule(original: ActivityRule, args, reference: date) -> ActivityRule:
@@ -441,6 +490,15 @@ def _run_query(
 ) -> int:
     has_activity = bool(tokens and tokens[0] in PRIMARY_FLAGS)
 
+    if action == "--check":
+        conflicts = conflicts_in_schedule(state, reference, reference + timedelta(days=6))
+        _print_json({
+            "start_date": reference.isoformat(),
+            "end_date": (reference + timedelta(days=6)).isoformat(),
+            "conflicts": conflicts,
+        })
+        return 0
+
     if action == "--generate-prompt" and not tokens:
         print(
             build_schedule_review_prompt(
@@ -512,7 +570,13 @@ def _run_query(
     _print_json({"start_date": start.isoformat(), "end_date": end.isoformat(), "conflicts": conflicts})
     return 0
 
+def _check_activity(name, state):
+    ...
+    return
 
+def _check_group(name, config):
+    ...
+    return 
 
 def _print_sample() -> None:
     reference = date(2026, 9, 21)
@@ -659,40 +723,42 @@ def _execute(argv: list[str]) -> int:
     # Existing command system
     # ------------------------------------------------------------
 
-    action = next(
-        (
-            token
-            for token in argv
-            if token in DIRECT_ACTIONS
-        ),
-        None,
-    )
-
-    if action is None:
+    detected_action = next((token for token in argv if token in DIRECT_ACTIONS), None)
+    if detected_action is None:
         parsed = parse_command(
             "cal " + shlex.join(argv)
         )
         _print_json(parsed.to_dict())
         return 0
 
-    action_index = argv.index(action)
-
     # review/export/watch commands: parse the full argv so flags
     # like --export-commands FILE, --profile, --relations, --no-snapshot are seen.
-    if action in {"--review", "--watch", "--export-commands", "--profile", "--relations", "--no-snapshot"}:
+    if detected_action in {"--review", "--watch", "--export-commands", "--profile", "--relations", "--no-snapshot"}:
         global_args = _global_parser().parse_args(argv)
         return review_handle(global_args) or 0
 
-    global_args = _global_parser().parse_args(
-        argv[:action_index]
-    )
+    action_location = _master_action_index(argv)
+    if action_location is None:
+        parsed = parse_command("cal " + shlex.join(argv))
+        _print_json(parsed.to_dict())
+        return 0
+    action_index, action = action_location
+    command_argv = [
+        *argv[:action_index],
+        action[2:],
+        "--",
+        *argv[action_index + 1:],
+    ]
+    parsed_args = _master_parser().parse_args(command_argv)
+    action = f"--{parsed_args.command}"
+    tokens = parsed_args.tokens[1:]
 
     reference = _parse_cli_date(
-        global_args.reference_date,
+        parsed_args.reference_date,
         date.today(),
     )
 
-    state_path = global_args.load
+    state_path = parsed_args.load
 
     # Convenience default for whole-calendar reports.
     if (
@@ -704,12 +770,11 @@ def _execute(argv: list[str]) -> int:
 
     state = CalendarState.load(state_path) if state_path else CalendarState()
 
-    tokens = argv[action_index + 1:]
     if action == "--reset":
         if tokens:
             raise CLIError("--reset does not accept extra arguments.")
 
-        if not global_args.save:
+        if not parsed_args.save:
             raise CLIError(
                 "Reset requires --save so you explicitly choose "
                 "which calendar file to clear.\n"
@@ -721,20 +786,20 @@ def _execute(argv: list[str]) -> int:
 
         # Create a fresh, empty calendar.
         empty_state = CalendarState()
-        empty_state.save(global_args.save)
+        empty_state.save(parsed_args.save)
 
         log_change(
             "RESET",
             activities=old_activity_ids,
             details=f"Removed {len(old_activity_ids)} activities.",
-            log_path=Path(global_args.save).with_name("cal_changes.jsonl"),
+            log_path=Path(parsed_args.save).with_name("cal_changes.jsonl"),
         )
 
         _print_json({
             "status": "RESET",
             "removed_activities": old_activity_ids,
             "count": len(old_activity_ids),
-            "saved_to": global_args.save,
+            "saved_to": parsed_args.save,
         })
         return 0
 
@@ -751,10 +816,10 @@ def _execute(argv: list[str]) -> int:
             tokens,
             state,
             reference,
-            global_args.save,
+            parsed_args.save,
         )
 
-    if global_args.save:
+    if parsed_args.save:
         raise CLIError(
             "--save is only valid with a mutating action."
         )
@@ -773,4 +838,3 @@ def main(argv: Optional[list[str]] = None) -> int:
     except (CLIError, CommandParseError, OperationError, StorageError, ValueError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 2
-

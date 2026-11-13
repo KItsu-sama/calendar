@@ -39,6 +39,12 @@ def test_legacy_definition_still_prints_structured_json():
     assert json.loads(result.stdout)["id"] == "school"
 
 
+def test_master_parser_preserves_abbreviated_global_options():
+    result = _run("--ref", "2026-09-21", "--schedule", "--date", "2026-09-21")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["start_date"] == "2026-09-21"
+
+
 def test_move_change_schedule_and_free_recalculate(tmp_path):
     path = tmp_path / "state.json"
     _add(path, "school", "--fixed", "--daily", "--time", "07:00-11:30", "--except", "sunday")
