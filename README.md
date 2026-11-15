@@ -120,6 +120,14 @@ python main.py gui
 On Windows, run `run_calendar.cmd` for the launcher menu. The unified GUI can
 also be opened with `python main.py group-schedule`.
 
+Add `--debug` to a CLI command to print its execution stages, timings, and a
+compact diagnostic report to stderr. Normal command output and calendar audit
+history remain unchanged:
+
+```powershell
+python main.py --debug --load calendar.json --schedule --from 2026-11-09 --to 2026-11-15
+```
+
 ## 05. Quick start
 
 Global options such as `--load` and `--save` go **before** the action.

@@ -17,27 +17,40 @@ if /I "%~1"=="group" goto group_editor
 title Calendar Tools
 echo.
 echo ==============================
-echo       Calendar Tools
+echo        Calendar Tools
 echo ==============================
 echo 1. Open Calendar GUI
-echo 2. CMD to add command
-echo 3. Show CLI help
+echo 2. Run CLI Command (Normal)
+echo 3. Run CLI Command (Debug Mode)
+echo 4. Show CLI help
 echo 0. Exit
 echo.
 set /p "choice=Choose an option: "
 
 if "%choice%"=="1" goto calendar_gui
-if "%choice%"=="2" goto cmd
-if "%choice%"=="3" goto cli_help
+if "%choice%"=="2" goto cmd_normal
+if "%choice%"=="3" goto cmd_debug
+if "%choice%"=="4" goto cli_help
 if "%choice%"=="0" goto end
 echo Invalid choice.
 goto menu
 
-:cmd
+:cmd_normal
 echo.
+echo Enter CLI command (e.g., --schedule --from today):
 set /p "user_cmd= > "
 echo.
 python main.py %user_cmd%
+echo.
+pause
+goto menu
+
+:cmd_debug
+echo.
+echo Enter CLI command in DEBUG mode (e.g., --schedule --from today):
+set /p "user_cmd= > "
+echo.
+python main.py --debug %user_cmd%
 echo.
 pause
 goto menu
@@ -65,14 +78,6 @@ goto end
 python main.py --help
 pause
 goto menu
-
-:exit
-echo.
-set /p "exit=done? (y/n)[y]: "
-echo.
-if /I "%exit%"=="n" goto menu
-pause
-else end
 
 :end
 endlocal

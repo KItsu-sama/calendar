@@ -45,6 +45,66 @@ def test_master_parser_preserves_abbreviated_global_options():
     assert json.loads(result.stdout)["start_date"] == "2026-09-21"
 
 
+def test_debug_traces_steps_without_changing_command_output():
+    args = ("--schedule", "--date", "2026-09-21")
+    normal = _run(*args)
+    debug_before = _run("--debug", *args)
+    debug_after = _run(*args[:1], "--debug", *args[1:])
+
+    assert normal.returncode == debug_before.returncode == debug_after.returncode == 0
+    assert debug_before.stdout == normal.stdout
+    assert debug_after.stdout == normal.stdout
+    assert "TRACE start cli.main" in debug_before.stderr
+    assert "TRACE start action.detect" in debug_before.stderr
+    assert "DEBUG REPORT" in debug_before.stderr
+    assert "TRACE" not in normal.stderr
+
+
+def test_debug_reports_failure_context_and_preserves_cli_error(tmp_path):
+    result = _run("--debug", "--load", tmp_path / "missing.json", "--schedule")
+
+    assert result.returncode == 2
+    assert "Error: Could not load calendar state" in result.stderr
+    assert "TRACE failed state.load" in result.stderr
+    assert '"stage": "state.load"' in result.stderr
+    assert '"location":' in result.stderr
+
+
+def test_debug_help_is_successful_and_lists_debug_option():
+    result = _run("--debug", "--help")
+
+    assert result.returncode == 0
+    assert "--debug" in result.stdout
+    assert '"failure": null' in result.stderr
+    assert "TRACE failed" not in result.stderr
+
+
+def test_debug_mutation_does_not_change_audit_history(tmp_path):
+    definition = (
+        "--reference-date", "2026-09-21", "--save",
+        "--add", "--fixed", "lunch", "--daily", "--time", "13:00-14:00",
+    )
+    normal_path = tmp_path / "normal" / "state.json"
+    debug_path = tmp_path / "debug" / "state.json"
+    normal = _run(*definition[:3], normal_path, *definition[3:])
+    debug = _run("--debug", *definition[:3], debug_path, *definition[3:])
+
+    assert normal.returncode == debug.returncode == 0
+    assert normal.stdout == debug.stdout
+
+    normal_audit = normal_path.with_name("cal_changes.jsonl").read_text(encoding="utf-8")
+    debug_audit = debug_path.with_name("cal_changes.jsonl").read_text(encoding="utf-8")
+    normal_events = [json.loads(line) for line in normal_audit.splitlines()]
+    debug_events = [json.loads(line) for line in debug_audit.splitlines()]
+    for event in normal_events + debug_events:
+        event.pop("timestamp")
+
+    assert len(debug_events) == len(normal_events) == 1
+    assert debug_events == normal_events
+    assert "TRACE" not in debug_audit
+    assert "DEBUG REPORT" not in debug_audit
+
+
 def test_move_change_schedule_and_free_recalculate(tmp_path):
     path = tmp_path / "state.json"
     _add(path, "school", "--fixed", "--daily", "--time", "07:00-11:30", "--except", "sunday")
