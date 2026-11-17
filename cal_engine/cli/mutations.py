@@ -4,30 +4,34 @@ import copy
 from typing import Optional
 from datetime import date, timedelta
 
-from . import (
-    _activity_from_tokens,
-    _direct_parser,
-    _print_json,
-    _source_date,
-    log_change,
-    parse_duration_minutes,
-    add_activity,
-    change_activity,
-    remove_activity,
-    create_exception,
-    _parse_cli_date,
-    parse_day_date,
-    parse_time_range,  
-    parse_dm_date,
-    CLIError,
-    CalendarState,
+from ..change_log import log_change
+from ..duration import parse_duration_minutes
+from ..models import (
+    ActivityRule,
     ExceptionAction,
-    RecurrenceType,
-    Recurrence,
-    Priority,
     Flexibility,
     MoveOptions,
+    Priority,
+    Recurrence,
+    RecurrenceType,
 )
+from ..operations import (
+    add_activity,
+    change_activity,
+    create_exception,
+    remove_activity,
+)
+from ..parser import parse_day_date, parse_dm_date, parse_time_range
+from ..storage import CalendarState
+
+from .arguments import (
+    _activity_from_tokens,
+    _direct_parser,
+    _parse_cli_date,
+    _source_date,
+)
+from .errors import CLIError
+from .output import _print_json
 
 def _complete(result, save_path: Optional[str]) -> int:
     _print_json(result.to_dict())

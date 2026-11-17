@@ -107,3 +107,51 @@ def test_complex_add_requires_ai_without_mutating_input():
     result = add_activity(state, incoming, REF, WED)
     assert result.status == "REQUIRES_AI"
     assert result.state.to_dict() == before
+
+
+def test_duplicate_exception_for_same_source_is_rejected():
+    state = _state()
+    cancelled = create_exception(state, "math", ExceptionAction.CANCEL, WED)
+    assert cancelled.status == "CANCELLED"
+    with pytest.raises(OperationError, match="already exists"):
+        create_exception(cancelled.state, "math", ExceptionAction.MOVE, WED, SAT)
+
+
+def test_move_outside_validity_rejected():
+    state = CalendarState()
+    state.add_rule(parse_command("cal --temp-fixed extra --wed --time 15:00-16:00 --until 30/9", REF))
+    after = date(2026, 10, 7)
+    with pytest.raises(OperationError, match="validity"):
+        create_exception(state, "extra", ExceptionAction.MOVE, WED, after)
+
+
+def test_move_duplicate_same_rule_occurrence_rejected():
+    state = CalendarState()
+    state.add_rule(parse_command("cal --fixed class --daily --time 15:00-16:00", REF))
+    tuesday = date(2026, 9, 22)
+    # Move Wednesday's class onto Tuesday at same time -> duplicates Tuesday's class instance
+    with pytest.raises(OperationError, match="duplicate"):
+        create_exception(state, "class", ExceptionAction.MOVE, WED, tuesday)
+
+
+def test_two_source_instances_moved_to_same_destination_duplicate_rejected():
+    state = CalendarState()
+    state.add_rule(parse_command("cal --fixed class --days wed thu --time 15:00-16:00", REF))
+    fri = date(2026, 9, 25)
+    thu = date(2026, 9, 24)
+    first = create_exception(state, "class", ExceptionAction.MOVE, WED, fri)
+    assert first.status in {"DIRECT_ADD", "SOLVED_LOCALLY"}
+    with pytest.raises(OperationError, match="duplicate"):
+        create_exception(first.state, "class", ExceptionAction.MOVE, thu, fri)
+
+
+def test_overnight_modify_preserved():
+    state = CalendarState()
+    state.add_rule(parse_command("cal --fixed shift --wed --time 22:00-23:00", REF))
+    from cal_engine.models import TimeWindow
+    result = create_exception(state, "shift", ExceptionAction.MODIFY, WED, WED, TimeWindow("22:00", "02:00"))
+    assert result.status == "DIRECT_ADD"
+    hits = [iv for iv in result.state.resolver().build_actual_schedule(WED, WED) if iv.activity_id == "shift"]
+    assert len(hits) == 1
+    assert hits[0].end.isoformat() == "2026-09-24T02:00:00"
+

@@ -1,1 +1,1 @@
-"""Opt-in diagnostics for the calendar engine."""
+"""Opt-in debuger for the calendar engine."""

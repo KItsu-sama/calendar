@@ -9,18 +9,13 @@ from datetime import date, timedelta
 from typing import Optional
 
 
-from . import(
-    PRIMARY_FLAGS,
-    review_args,
-    first_occurrence,
-    parse_dm_date,
-    parse_command,
-    CLIError,
-    CalendarState,
-    ActivityRule,
-    CalendarException,
-    RecurrenceType,
-)
+from ..models import ActivityRule, CalendarException, RecurrenceType
+from ..operations import first_occurrence
+from ..parser import PRIMARY_FLAGS, parse_command, parse_dm_date
+from ..review import review_args
+from ..storage import CalendarState
+
+from .errors import CLIError
 
 _MASTER_ACTIONS = (
     "--add",

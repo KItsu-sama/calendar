@@ -12,9 +12,10 @@ schedule via interval-gap arithmetic — it is never stored.
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .models import ActivityRule, CalendarException, ExceptionAction, Flexibility, RecurrenceType
 
@@ -43,6 +44,7 @@ class Interval:
     name: Optional[str] = None
     flexibility: Optional[Flexibility] = None
     priority: Optional[str] = None
+    source_date: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -82,6 +84,15 @@ def _rule_applies_on(rule: ActivityRule, current_date: date, day_code: str) -> b
     return False
 
 
+def _window_end(start: datetime, start_time: str, end_time: str) -> datetime:
+    s_h, s_m = map(int, start_time.split(":"))
+    e_h, e_m = map(int, end_time.split(":"))
+    end = start.replace(hour=e_h, minute=e_m)
+    if (e_h, e_m) <= (s_h, s_m):
+        end += timedelta(days=1)
+    return end
+
+
 def _find_exception(
     exceptions: List[CalendarException], rule_id: str, current_date: date
 ) -> Optional[CalendarException]:
@@ -97,22 +108,39 @@ class ScheduleResolver:
         self.rules = rules
         self.exceptions = exceptions
         self._rules_by_id = {r.id: r for r in rules}
+        self._exceptions_by_target: Dict[Tuple[str, str], CalendarException] = {}
+        self._moves_to: Dict[str, List[Tuple[str, CalendarException]]] = defaultdict(list)
+        self._reindex_exceptions()
+
+    def _reindex_exceptions(self) -> None:
+        self._exceptions_by_target.clear()
+        self._moves_to.clear()
+        for exc in self.exceptions:
+            key = (exc.rule_id, exc.target_date)
+            # Keep first to avoid silent overwrite; operations/storage should prevent duplicates.
+            self._exceptions_by_target.setdefault(key, exc)
+            if exc.action == ExceptionAction.MOVE and exc.new_date:
+                self._moves_to[exc.new_date].append((exc.target_date, exc))
 
     def get_rule(self, rule_id: str) -> Optional[ActivityRule]:
         return self._rules_by_id.get(rule_id)
 
     def build_actual_schedule(self, start_date: date, end_date: date) -> List[Interval]:
         concrete: List[Interval] = []
-        current_date = start_date
+        probe_start = start_date - timedelta(days=1)
+        probe_end = end_date + timedelta(days=1)
+        window_start = datetime.combine(start_date, datetime.min.time())
+        window_end = datetime.combine(end_date + timedelta(days=1), datetime.min.time())
+        current_date = probe_start
 
-        while current_date <= end_date:
+        while current_date <= probe_end:
             day_code = _day_code(current_date)
 
             for rule in self.rules:
                 if not _rule_applies_on(rule, current_date, day_code):
                     continue
 
-                exc = _find_exception(self.exceptions, rule.id, current_date)
+                exc = self._exceptions_by_target.get((rule.id, current_date.isoformat()))
                 if exc:
                     if exc.action == ExceptionAction.CANCEL:
                         continue
@@ -120,34 +148,40 @@ class ScheduleResolver:
                         # Materialized separately, on its new_date, below.
                         continue
                     if exc.action == ExceptionAction.MODIFY:
-                        interval = self._interval_for(rule, current_date, override_time=exc.new_time)
+                        interval = self._interval_for(rule, current_date, source_date=current_date, override_time=exc.new_time)
                         if interval:
                             concrete.append(interval)
                         continue
 
-                interval = self._interval_for(rule, current_date)
+                interval = self._interval_for(rule, current_date, source_date=current_date)
                 if interval:
                     concrete.append(interval)
 
             # Exceptions that moved an instance TO this date.
-            for exc in self.exceptions:
-                if exc.action == ExceptionAction.MOVE and exc.new_date == current_date.isoformat():
-                    parent = self._rules_by_id.get(exc.rule_id)
-                    if parent is None:
-                        continue
-                    interval = self._interval_for(parent, current_date, override_time=exc.new_time)
-                    if interval:
-                        concrete.append(interval)
+            for source_target, exc in self._moves_to.get(current_date.isoformat(), []):
+                if source_target == current_date.isoformat():
+                    continue
+                parent = self._rules_by_id.get(exc.rule_id)
+                if parent is None:
+                    continue
+                # Destination must be inside the parent rule validity window.
+                if not _in_validity_window(parent, current_date):
+                    continue
+                interval = self._interval_for(parent, current_date, source_date=date.fromisoformat(source_target), override_time=exc.new_time)
+                if interval:
+                    concrete.append(interval)
 
             current_date += timedelta(days=1)
 
-        concrete.sort(key=lambda i: i.start)
+        concrete = [iv for iv in concrete if iv.end > window_start and iv.start < window_end]
+        concrete.sort(key=lambda i: (i.start, i.end, i.activity_id or ""))
         return concrete
 
     def _interval_for(
         self,
         rule: ActivityRule,
         on_date: date,
+        source_date: Optional[date] = None,
         override_time=None,
     ) -> Optional[Interval]:
 
@@ -165,7 +199,6 @@ class ScheduleResolver:
             return None
 
         s_h, s_m = map(int, window.start_time.split(":"))
-        e_h, e_m = map(int, window.end_time.split(":"))
 
         start = datetime.combine(
             on_date,
@@ -175,13 +208,7 @@ class ScheduleResolver:
             ),
         )
 
-        end = datetime.combine(
-            on_date,
-            datetime.min.time().replace(
-                hour=e_h,
-                minute=e_m,
-            ),
-        )
+        end = _window_end(start, window.start_time, window.end_time)
 
         return Interval(
             start=start,
@@ -190,6 +217,7 @@ class ScheduleResolver:
             name=rule.name,
             flexibility=rule.flexibility,
             priority=rule.priority.value if rule.priority else None,
+            source_date=(source_date or on_date).isoformat(),
         )
 
     @staticmethod

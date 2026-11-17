@@ -61,6 +61,8 @@ def _fixed_window_on(rule: ActivityRule, on_date: date):
     e_h, e_m = map(int, window.end_time.split(":"))
     start = datetime.combine(on_date, datetime.min.time().replace(hour=s_h, minute=s_m))
     end = datetime.combine(on_date, datetime.min.time().replace(hour=e_h, minute=e_m))
+    if (e_h, e_m) <= (s_h, s_m):
+        end += timedelta(days=1)
     return start, end
 
 

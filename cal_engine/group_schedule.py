@@ -1,7 +1,7 @@
 """Editable group/schedule configuration and bridge to the existing cal state.
 
 This is intentionally additive: group metadata lives in a separate JSON file so
-existing version-1 data/data/calendar.json files remain schema-compatible.
+existing version-1 data//calendar.json files remain schema-compatible.
 """
 from __future__ import annotations
 

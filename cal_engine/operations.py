@@ -31,10 +31,19 @@ def _time_value(day: date, value: str) -> datetime:
 
 def _window_interval(window: TimeWindow, day: date) -> tuple[datetime, datetime]:
     start = _time_value(day, window.start_time)
-    end = _time_value(day, window.end_time)
+    end = _window_end(start, window.start_time, window.end_time)
     if end <= start:
         raise OperationError(f"Time range must end after it starts: {window.start_time}-{window.end_time}.")
     return start, end
+
+
+def _window_end(start: datetime, start_time: str, end_time: str) -> datetime:
+    e_h, e_m = map(int, end_time.split(":"))
+    end = start.replace(hour=e_h, minute=e_m)
+    s_h, s_m = map(int, start_time.split(":"))
+    if (e_h, e_m) <= (s_h, s_m):
+        end += timedelta(days=1)
+    return end
 
 def has_concrete_time(rule: ActivityRule) -> bool:
     return (
@@ -128,8 +137,8 @@ def _validate_reschedule(
     end: datetime,
     preserve_duration: bool = True,
 ) -> None:
-    if end <= start or start.date() != end.date():
-        raise OperationError("A rescheduled activity must start and end on the same day in chronological order.")
+    if end <= start:
+        raise OperationError("A rescheduled activity must end after it starts.")
     if preserve_duration and end - start != original.end - original.start:
         raise OperationError(f"Cannot change the duration of '{rule.id}' implicitly.")
     if start.date() != original.start.date():
@@ -151,14 +160,33 @@ def parse_ai_datetime(value: object, field_name: str) -> datetime:
         raise OperationError(f"Invalid {field_name} '{value}'; expected YYYY-MM-DD HH:MM.") from None
 
 
-def proposed_change_to_dict(change: ProposedChange) -> dict:
-    return {
-        "activity_id": change.activity_id,
-        "action": change.action,
-        "new_start": change.new_start.strftime("%Y-%m-%d %H:%M"),
-        "new_end": change.new_end.strftime("%Y-%m-%d %H:%M"),
-        "reasoning": change.reasoning,
-    }
+def _effective_window(rule: ActivityRule, on_date: date, new_time: Optional[TimeWindow]) -> TimeWindow:
+    if new_time is not None:
+        return new_time
+    window = window_for(rule, on_date)
+    if window is None:
+        raise OperationError(f"'{rule.id}' has no time window for {on_date.isoformat()}.")
+    return window
+
+
+def _assert_no_duplicate_move_destination(
+    state: CalendarState, rule_id: str, source_date: date, dest_date: date, window: TimeWindow
+) -> None:
+    if dest_date.isoformat() == source_date.isoformat():
+        return
+    start, end = _window_interval(window, dest_date)
+    probe_start = dest_date - timedelta(days=1)
+    probe_end = dest_date + timedelta(days=1)
+    for item in state.resolver().build_actual_schedule(probe_start, probe_end):
+        if item.activity_id != rule_id:
+            continue
+        # Ignore the very source instance being moved.
+        if item.source_date == source_date.isoformat():
+            continue
+        if item.start == start and item.end == end:
+            raise OperationError(
+                f"Moving '{rule_id}' to {dest_date.isoformat()} would duplicate an existing occurrence."
+            )
 
 
 @dataclass
@@ -180,6 +208,16 @@ class OperationResult:
             "changes": [proposed_change_to_dict(item) for item in self.changes],
             "reason": self.reason,
         }
+
+
+def proposed_change_to_dict(change: ProposedChange) -> dict:
+    return {
+        "activity_id": change.activity_id,
+        "action": change.action,
+        "new_start": change.new_start.strftime("%Y-%m-%d %H:%M"),
+        "new_end": change.new_end.strftime("%Y-%m-%d %H:%M"),
+        "reasoning": change.reasoning,
+    }
 
 
 def _result(
@@ -355,6 +393,10 @@ def create_exception(
     new_time: Optional[TimeWindow] = None,
 ) -> OperationResult:
     rule = state.require_rule(activity_id)
+    # At most one exception per source instance.
+    if any(item.rule_id == activity_id and item.target_date == source_date.isoformat() for item in state.exceptions):
+        raise OperationError(f"An exception already exists for '{activity_id}' on {source_date.isoformat()}.")
+
     original = _interval_on(state, activity_id, source_date)
     base = state.copy()
     _without_instance_exceptions(base, activity_id, source_date)
@@ -372,11 +414,17 @@ def create_exception(
         return _result(base, "CANCELLED", "CANCEL", activity_id)
 
     target_date = new_date or source_date
-    window = new_time or TimeWindow(
-        start_time=original.start.strftime("%H:%M"), end_time=original.end.strftime("%H:%M")
-    )
+    window = _effective_window(rule, source_date, new_time)
     start, end = _window_interval(window, target_date)
     _validate_reschedule(rule, original, start, end, preserve_duration=False)
+
+    # Destination must remain within parent rule validity for moves.
+    if action == ExceptionAction.MOVE or target_date != source_date:
+        if rule.recurrence.valid_from and target_date < date.fromisoformat(rule.recurrence.valid_from):
+            raise OperationError(f"Move destination {target_date.isoformat()} is before '{activity_id}' validity.")
+        if rule.recurrence.valid_until and target_date > date.fromisoformat(rule.recurrence.valid_until):
+            raise OperationError(f"Move destination {target_date.isoformat()} is after '{activity_id}' validity.")
+        _assert_no_duplicate_move_destination(base, activity_id, source_date, target_date, window)
 
     # Hide the source occurrence while the local solver evaluates the destination.
     temporary = base.copy()

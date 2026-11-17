@@ -6,25 +6,24 @@ from datetime import date
 import shlex
 from pathlib import Path
 
-from . import (
-    CLIError,
-    CalendarState,
+from ..change_log import log_change
+from ..parser import parse_command
+from ..review import review_handle
+from ..storage import CalendarState
+
+from .arguments import (
+    DIRECT_ACTIONS,
     _global_parser,
     _master_action_index,
     _master_parser,
     _parse_cli_date,
     _print_sample,
-    _run_mutation,
-    _run_query,
-    review_handle,
-    _run_today,
-    _run_week,
-    _run_batch,
-    parse_command,
-    _print_json,
-    log_change,
-    DIRECT_ACTIONS,
 )
+from .errors import CLIError
+from .mutations import _run_mutation
+from .output import _print_json
+from .queries import _run_query
+from .special import _run_batch, _run_today, _run_week
 from ..debuger.trace import trace_stage
 
 
@@ -44,8 +43,8 @@ def _execute_command(argv: list[str]) -> int:
         )
         group_parser.add_argument(
             "--calendar",
-            default="data/data/data/calendar.json",
-            help="Calendar JSON destination for --export-config (default: data/data/calendar.json).",
+            default="data//data/calendar.json",
+            help="Calendar JSON destination for --export-config (default: data//calendar.json).",
         )
         with trace_stage("group_schedule.parse"):
             group_args = group_parser.parse_args(argv[1:])
@@ -123,7 +122,7 @@ def _execute_command(argv: list[str]) -> int:
         if len(remaining) != 1:
             raise CLIError(
                 "Batch requires exactly one schedule file.\n"
-                "Example: python main.py --save data/data/calendar.json --batch schedule.txt"
+                "Example: python main.py --save data//calendar.json --batch schedule.txt"
             )
 
         reference = _parse_cli_date(
@@ -196,9 +195,9 @@ def _execute_command(argv: list[str]) -> int:
     if (
         action == "--generate-prompt"
         and not state_path
-        and Path("data/data/calendar.json").is_file()
+        and Path("data/calendar.json").is_file()
     ):
-        state_path = "data/data/calendar.json"
+        state_path = "data/calendar.json"
 
     with trace_stage("state.load"):
         state = CalendarState.load(state_path) if state_path else CalendarState()
@@ -207,32 +206,30 @@ def _execute_command(argv: list[str]) -> int:
         if tokens:
             raise CLIError("--reset does not accept extra arguments.")
 
-        if not parsed_args.save:
-            raise CLIError(
-                "Reset requires --save so you explicitly choose "
-                "which calendar file to clear.\n"
-                "Example: python main.py --load data/data/calendar.json "
-                "--reset --save data/data/calendar.json"
-            )
+        target = parsed_args.save or parsed_args.load
+        if not target:
+            target = "data/calendar.json" if Path("data/calendar.json").is_file() else "calendar.json"
 
-        old_activity_ids = [rule.id for rule in state.rules]
+        # Reload target so reset reflects and logs what is actually cleared.
+        reset_state = CalendarState.load(target) if Path(target).is_file() else state
+        old_activity_ids = [rule.id for rule in reset_state.rules]
 
         # Create a fresh, empty calendar.
         empty_state = CalendarState()
-        empty_state.save(parsed_args.save)
+        empty_state.save(target)
 
         log_change(
             "RESET",
             activities=old_activity_ids,
             details=f"Removed {len(old_activity_ids)} activities.",
-            log_path=Path(parsed_args.save).with_name("cal_changes.jsonl"),
+            log_path=Path(target).with_name("cal_changes.jsonl"),
         )
 
         _print_json({
             "status": "RESET",
             "removed_activities": old_activity_ids,
             "count": len(old_activity_ids),
-            "saved_to": parsed_args.save,
+            "saved_to": target,
         })
         return 0
 

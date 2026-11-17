@@ -120,3 +120,61 @@ def test_free_time_never_stored_only_derived():
     second = resolver.free_time_for_day(REF)
     assert first == second
     assert not any(hasattr(r, "free_time") for r in resolver.rules)
+
+
+def test_move_to_non_recurring_day_is_materialized():
+    wednesday = date(2026, 9, 23)
+    sunday = date(2026, 9, 27)
+    move_exc = CalendarException(
+        id="math-move-sun",
+        rule_id="math-class",
+        target_date=wednesday.isoformat(),
+        action=ExceptionAction.MOVE,
+        new_date=sunday.isoformat(),
+    )
+    resolver = ScheduleResolver(rules=_monday_rules(), exceptions=[move_exc])
+    assert "math-class" not in [iv.activity_id for iv in resolver.build_actual_schedule(wednesday, wednesday)]
+    sun = [iv for iv in resolver.build_actual_schedule(sunday, sunday) if iv.activity_id == "math-class"]
+    assert len(sun) == 1 and sun[0].start.strftime("%H:%M") == "15:00"
+
+
+def test_move_destination_outside_validity_is_not_materialized():
+    rule = parse_command("cal --temp-fixed extra --wed --time 15:00-16:00 --until 30/9", REF)
+    wednesday = date(2026, 9, 23)
+    after = date(2026, 10, 7)
+    move_exc = CalendarException(
+        id="extra-move", rule_id="extra", target_date=wednesday.isoformat(),
+        action=ExceptionAction.MOVE, new_date=after.isoformat(),
+    )
+    resolver = ScheduleResolver(rules=[rule], exceptions=[move_exc])
+    assert resolver.build_actual_schedule(wednesday, wednesday) == []
+    assert resolver.build_actual_schedule(after, after) == []
+
+
+def test_move_destination_outside_query_range_suppresses_source_only():
+    wednesday = date(2026, 9, 23)
+    saturday = date(2026, 9, 26)
+    move_exc = CalendarException(
+        id="math-move", rule_id="math-class", target_date=wednesday.isoformat(),
+        action=ExceptionAction.MOVE, new_date=saturday.isoformat(),
+    )
+    resolver = ScheduleResolver(rules=_monday_rules(), exceptions=[move_exc])
+    wed = resolver.build_actual_schedule(wednesday, wednesday)
+    assert "math-class" not in [iv.activity_id for iv in wed]
+    sat = resolver.build_actual_schedule(saturday, saturday)
+    assert any(iv.activity_id == "math-class" for iv in sat)
+
+
+def test_overnight_interval_spans_midnight_and_affects_both_days():
+    night = parse_command("cal --fixed night-shift --mon --time 22:00-02:00", REF)
+    resolver = ScheduleResolver(rules=[night], exceptions=[])
+    mon = [iv for iv in resolver.build_actual_schedule(REF, REF) if iv.activity_id == "night-shift"]
+    assert len(mon) == 1
+    assert mon[0].start == datetime(2026, 9, 21, 22, 0)
+    assert mon[0].end == datetime(2026, 9, 22, 2, 0)
+    tue = date(2026, 9, 22)
+    tue_hits = [iv for iv in resolver.build_actual_schedule(tue, tue) if iv.activity_id == "night-shift"]
+    assert len(tue_hits) == 1 and tue_hits[0].end == datetime(2026, 9, 22, 2, 0)
+    free_tue = resolver.free_time_for_day(tue)
+    assert free_tue[0].start == datetime(2026, 9, 22, 2, 0)
+

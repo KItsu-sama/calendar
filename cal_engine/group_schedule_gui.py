@@ -34,7 +34,7 @@ class GroupScheduleEditor:
         "version": 1,
         "groups": [],
         "schedules": [],
-    }
+    }  
 
     self.config_path = (
         Path(config_path) if config_path else Path("groups_schedules.json")
@@ -239,7 +239,7 @@ class GroupScheduleEditor:
     bottom = ttk.Frame(self.root, padding=10)
     bottom.pack(fill="x")
     ttk.Button(
-        bottom, text="Export to data/data/calendar.json…", command=self.export
+        bottom, text="Export to data//calendar.json…", command=self.export
     ).pack(side="left")
     self.status = tk.StringVar(value="Ready")
     ttk.Label(bottom, textvariable=self.status).pack(side="left", padx=12)
@@ -510,7 +510,7 @@ class GroupScheduleEditor:
 
       path = filedialog.asksaveasfilename(
           title="Export / update calendar state",
-          initialfile="data/data/calendar.json",
+          initialfile="data//calendar.json",
           defaultextension=".json",
       )
       if not path:

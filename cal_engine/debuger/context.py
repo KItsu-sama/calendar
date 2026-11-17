@@ -38,7 +38,7 @@ class DiagnosticContext:
         location = "unknown"
         for frame in reversed(frames):
             filename = frame.filename.replace("/", "\\").lower()
-            if "\\diagnostics\\" not in filename:
+            if "\\debuger\\" not in filename:
                 location = f"{frame.filename}:{frame.lineno} in {frame.name}"
                 break
 
