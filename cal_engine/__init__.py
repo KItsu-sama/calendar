@@ -59,6 +59,15 @@ from .transactions import (
     schedule_state_snapshot,
 )
 from .resolution import ResolutionEngine, ResolutionError, ResolutionOutcome
+from .transactional_persistence import (
+    CoordinatedStore,
+    FileVersion,
+    PersistenceError,
+    RecoveryError,
+    TransactionError,
+    TransactionRecord,
+    ValidationError,
+)
 
 
 __all__ = [
@@ -118,4 +127,11 @@ __all__ = [
     "ResolutionEngine",
     "ResolutionError",
     "ResolutionOutcome",
+    "CoordinatedStore",
+    "FileVersion",
+    "PersistenceError",
+    "RecoveryError",
+    "TransactionError",
+    "TransactionRecord",
+    "ValidationError",
 ]
