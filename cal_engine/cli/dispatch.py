@@ -19,6 +19,7 @@ from .arguments import (
     _parse_cli_date,
     _print_sample,
 )
+from ..helpper import Help
 from .errors import CLIError
 from .mutations import _run_mutation
 from .output import _print_json
@@ -71,8 +72,7 @@ def _execute_command(argv: list[str]) -> int:
         return 0
 
     if not argv:
-        _print_sample()
-        return 0
+        return Help().assist()
 
     if argv in (["-h"], ["--help"]):
         with trace_stage("help.parse"):

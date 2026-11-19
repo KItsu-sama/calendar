@@ -127,13 +127,21 @@ def main(argv: Optional[list[str]] = None) -> int:
             with trace_stage("cli.main"):
                 return _execute(arguments)
 
-    except (
-        CLIError,
-        CommandParseError,
-        OperationError,
-        StorageError,
-        ValueError,
-    ) as error:
+    except (CLIError, CommandParseError) as error:
+        # CLIError: valid shell syntax but invalid cal usage.
+        # CommandParseError: malformed `cal` command (e.g. missing required primary flag).
+        if debug_enabled:
+            logger.error("Command failed: %s", error)
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            from ..helpper import Help
+
+            return Help().assist(str(error))
+        print(f"Error: {error}", file=sys.stderr)
+        return 2
+    except (OperationError, StorageError, ValueError) as error:
+        # OperationError: requested state change cannot be applied safely.
+        # StorageError: calendar state cannot be loaded, saved, or validated.
+        # ValueError: inappropriate argument value (of correct type).
         if debug_enabled:
             logger.error("Command failed: %s", error)
         print(f"Error: {error}", file=sys.stderr)
