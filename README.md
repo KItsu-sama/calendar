@@ -99,13 +99,12 @@ cd calendar
 python -m pip install -r requirements.txt
 ```
 
-Add `pytest` if you plan to run tests. You can also use an existing checkout
-without cloning.
+You can also use an existing checkout without cloning.
 
 ### Configure the calendar
 
 The CLI loads calendar state only when you pass `--load FILE`. To start with
-the repository's sample calendar, use `calendar.json`; otherwise, create a
+the repository's sample calendar, use `data/calendar.json`; otherwise, create a
 new state by using a mutation with `--save FILE`. The GUI uses
 `calendar.json` and `groups_schedules.json` in the working directory by
 default. Back up these files before experimenting with real schedule data.
@@ -445,19 +444,17 @@ save only the changes you intend to keep.
 main.py                 CLI entry point
 cal_engine/             scheduling models, resolver, CLI, GUI, review workflow
 tests/                  automated test suite
-calendar.json           local sample calendar (ignored by Git)
-schedule.txt            batch schedule example
+data/calendar.json      local sample calendar (ignored by Git)
 ROADMAP.md              development phases and priorities
 STATE.md                implementation notes and current status
 ```
 
 ### Development environment and tests
 
-Install the runtime and test dependencies, then run tests from the repository
-root:
+Install the runtime dependencies, then run tests from the repository root:
 
 ```powershell
-python -m pip install jsonschema pytest
+python -m pip install -r requirements.txt
 python -m pytest
 ```
 

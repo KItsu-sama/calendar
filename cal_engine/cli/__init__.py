@@ -98,6 +98,24 @@ __all__ = [
 ]
 
 
+def _helper_calendar_path(arguments: list[str]) -> str | None:
+    fallback = None
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        if token.startswith("--load="):
+            return token.partition("=")[2]
+        if token == "--load" and index + 1 < len(arguments):
+            return arguments[index + 1]
+        if token.startswith("--save="):
+            fallback = token.partition("=")[2]
+        elif token == "--save" and index + 1 < len(arguments):
+            fallback = arguments[index + 1]
+            index += 1
+        index += 1
+    return fallback
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     debug_enabled = "--debug" in arguments
@@ -135,7 +153,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         if sys.stdin.isatty() and sys.stdout.isatty():
             from ..helpper import Help
 
-            return Help().assist(str(error))
+            return Help(
+                calendar_path=_helper_calendar_path(arguments),
+                debug_enabled=debug_enabled,
+            ).assist(str(error))
         print(f"Error: {error}", file=sys.stderr)
         return 2
     except (OperationError, StorageError, ValueError) as error:

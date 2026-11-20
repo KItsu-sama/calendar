@@ -1,1 +1,2 @@
 jsonschema
+rich==15.0.0
