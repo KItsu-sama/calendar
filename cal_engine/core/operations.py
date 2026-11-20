@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import List, Optional
 
-from .conflict import ProposedChange, resolve_conflict_locally
+from ..conflict.conflict import ProposedChange, resolve_conflict_locally
 from .models import (
     ActivityRule,
     CalendarException,

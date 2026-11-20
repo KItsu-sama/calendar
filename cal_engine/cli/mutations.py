@@ -4,9 +4,9 @@ import copy
 from typing import Optional
 from datetime import date, timedelta
 
-from ..change_log import log_change
-from ..duration import parse_duration_minutes
-from ..models import (
+from ..scheduling.change_log import log_change
+from ..scheduling.duration import parse_duration_minutes
+from ..core.models import (
     ActivityRule,
     ExceptionAction,
     Flexibility,
@@ -15,14 +15,14 @@ from ..models import (
     Recurrence,
     RecurrenceType,
 )
-from ..operations import (
+from ..core.operations import (
     add_activity,
     change_activity,
     create_exception,
     remove_activity,
 )
-from ..parser import parse_day_date, parse_dm_date, parse_time_range
-from ..storage import CalendarState
+from ..core.parser import parse_day_date, parse_dm_date, parse_time_range
+from ..core.storage import CalendarState
 
 from .arguments import (
     _activity_from_tokens,

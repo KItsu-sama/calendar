@@ -12,7 +12,7 @@ from cal_engine import (
     parse_command,
     resolve_conflict_locally,
 )
-from cal_engine.models import ExceptionAction
+from cal_engine.core.models import ExceptionAction
 
 REF = date(2026, 9, 21)
 WED = date(2026, 9, 23)
@@ -148,7 +148,7 @@ def test_two_source_instances_moved_to_same_destination_duplicate_rejected():
 def test_overnight_modify_preserved():
     state = CalendarState()
     state.add_rule(parse_command("cal --fixed shift --wed --time 22:00-23:00", REF))
-    from cal_engine.models import TimeWindow
+    from cal_engine.core.models import TimeWindow
     result = create_exception(state, "shift", ExceptionAction.MODIFY, WED, WED, TimeWindow("22:00", "02:00"))
     assert result.status == "DIRECT_ADD"
     hits = [iv for iv in result.state.resolver().build_actual_schedule(WED, WED) if iv.activity_id == "shift"]

@@ -13,20 +13,20 @@ from jsonschema.exceptions import ValidationError
 
 from .terminal import Terminal
 
-from .duration import parse_duration_minutes
-from .models import (
+from ..scheduling.duration import parse_duration_minutes
+from ..core.models import (
     ActivityRule,
     CalendarException,
     validate_activity_rule,
     validate_calendar_exception,
 )
-from .parser import (
+from ..core.parser import (
     parse_command,
     parse_day_date,
     parse_dm_date,
     parse_time_range,
 )
-from .storage import CalendarState
+from ..core.storage import CalendarState
 
 
 class _InteractionCancelled(Exception):
@@ -40,7 +40,7 @@ class Help:
         debug_enabled: bool = False,
     ) -> None:
         self.python = sys.executable
-        self.entrypoint = Path(__file__).resolve().parents[1] / "main.py"
+        self.entrypoint = Path(__file__).resolve().parents[2] / "main.py"
         self.calendar_path = Path(calendar_path) if calendar_path else self._default_calendar_path()
         self.terminal = Terminal()
         self.debug_enabled = debug_enabled

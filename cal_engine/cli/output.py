@@ -7,7 +7,7 @@ from typing import Optional
 
 from rich.console import Console
 
-from ..terminal import Terminal
+from ..ui.terminal import Terminal
 
 
 def _print_json(value: dict) -> None:

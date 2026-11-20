@@ -1,4 +1,4 @@
-from .models import (
+from .core.models import (
     ActivityRule,
     CalendarException,
     Flexibility,
@@ -12,15 +12,15 @@ from .models import (
     validate_activity_rule,
     validate_calendar_exception,
 )
-from .parser import parse_command, CommandParseError
-from .resolver import ScheduleResolver, Interval
-from .conflict import (
+from .core.parser import parse_command, CommandParseError
+from .core.resolver import ScheduleResolver, Interval
+from .conflict.conflict import (
     find_overlapping_intervals,
     resolve_conflict_locally,
     LocalSolveResult,
     ProposedChange,
 )
-from .ai_escalation import (
+from .conflict.ai_escalation import (
     build_conflict_prompt,
     parse_llm_response,
     escalate_to_ai,
@@ -30,15 +30,15 @@ from .ai_escalation import (
     LLMResponseError,
     AI_RESPONSE_SCHEMA,
 )
-from .models import (
+from .core.models import (
     ACTIVITY_RULE_SCHEMA,
     CALENDAR_EXCEPTION_SCHEMA,
     activity_rule_from_dict,
     calendar_exception_from_dict,
 )
-from .parser import parse_day_date, parse_dm_date, parse_time_range
-from .storage import CalendarState, StorageError
-from .operations import (
+from .core.parser import parse_day_date, parse_dm_date, parse_time_range
+from .core.storage import CalendarState, StorageError
+from .core.operations import (
     OperationError,
     OperationResult,
     add_activity,
@@ -49,7 +49,7 @@ from .operations import (
     preview_activity,
     remove_activity,
 )
-from .transactions import (
+from .core.transactions import (
     TransactionError,
     TransactionLog,
     TransactionRecord,
@@ -58,8 +58,8 @@ from .transactions import (
     digest_state,
     schedule_state_snapshot,
 )
-from .resolution import ResolutionEngine, ResolutionError, ResolutionOutcome
-from .transactional_persistence import (
+from .conflict.resolution import ResolutionEngine, ResolutionError, ResolutionOutcome
+from .core.transactional_persistence import (
     CoordinatedStore,
     FileVersion,
     PersistenceError,

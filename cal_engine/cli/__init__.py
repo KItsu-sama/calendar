@@ -22,11 +22,11 @@ from typing import Optional
 from ..debuger.context import DiagnosticContext, diagnostic_context
 from ..debuger.logger import configure_logging
 from ..debuger.trace import trace_stage
-from ..ai_escalation import build_conflict_prompt, build_schedule_review_prompt
-from ..batch import import_batch_file
-from ..change_log import log_change
-from ..duration import parse_duration_minutes
-from ..models import (
+from ..conflict.ai_escalation import build_conflict_prompt, build_schedule_review_prompt
+from ..scheduling.batch import import_batch_file
+from ..scheduling.change_log import log_change
+from ..scheduling.duration import parse_duration_minutes
+from ..core.models import (
     ActivityRule,
     CalendarException,
     ExceptionAction,
@@ -36,7 +36,7 @@ from ..models import (
     Recurrence,
     RecurrenceType,
 )
-from ..operations import (
+from ..core.operations import (
     OperationError,
     add_activity,
     change_activity,
@@ -46,7 +46,7 @@ from ..operations import (
     preview_activity,
     remove_activity,
 )
-from ..parser import (
+from ..core.parser import (
     PRIMARY_FLAGS,
     CommandParseError,
     parse_command,
@@ -54,9 +54,9 @@ from ..parser import (
     parse_dm_date,
     parse_time_range,
 )
-from ..review import review_args, review_handle
-from ..storage import CalendarState, StorageError
-from cal_engine.review import review_args
+from ..scheduling.review import review_args, review_handle
+from ..core.storage import CalendarState, StorageError
+from ..scheduling.review import review_args
 
 from .errors import CLIError
 from .arguments import (
@@ -151,7 +151,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if debug_enabled:
             logger.error("Command failed: %s", error)
         if sys.stdin.isatty() and sys.stdout.isatty():
-            from ..helpper import Help
+            from ..ui.helpper import Help
 
             return Help(
                 calendar_path=_helper_calendar_path(arguments),

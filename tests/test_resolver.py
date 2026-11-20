@@ -1,7 +1,7 @@
 from datetime import date, datetime
 
 from cal_engine import ExceptionAction, ScheduleResolver, parse_command
-from cal_engine.models import CalendarException
+from cal_engine.core.models import CalendarException
 
 REF = date(2026, 9, 21)  # a Monday
 

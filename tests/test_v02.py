@@ -8,12 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from cal_engine.availability import Profile, load_profile, to_min
-from cal_engine.decompile import (reference_parse, roundtrip_check, rule_to_command,
-                                  state_to_script, unsupported_fields)
-from cal_engine.derive import (candidate_slots, expand_occurrences, generate_derived,
-                               parse_duration)
-from cal_engine.review import run_review, watch
+from cal_engine.scheduling.availability import Profile, load_profile, to_min
+from cal_engine.scheduling.decompile import (reference_parse, roundtrip_check, rule_to_command,
+                                             state_to_script, unsupported_fields)
+from cal_engine.scheduling.derive import (candidate_slots, expand_occurrences, generate_derived,
+                                          parse_duration)
+from cal_engine.scheduling.review import run_review, watch
 
 EX = Path(__file__).resolve().parent.parent / "examples"
 MON, SUN = date(2026, 10, 12), date(2026, 10, 18)  # the week from the v0.1 output
@@ -233,7 +233,7 @@ def test_watch_reruns_after_save(workdir):
 
 from datetime import date, datetime
 
-from cal_engine.planner import plan_activities
+from cal_engine.scheduling.planner import plan_activities
 
 
 def test_planner_never_overlaps_its_own_suggestions():

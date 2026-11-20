@@ -6,11 +6,11 @@ from datetime import date
 import pytest
 
 from cal_engine import parse_command
-from cal_engine.conflict import resolve_conflict_locally
-from cal_engine.derive import coalesce_occurrences, expand_occurrences, generate_derived
-from cal_engine.operations import add_activity, preview_activity
-from cal_engine.review import run_review
-from cal_engine.storage import CalendarState
+from cal_engine.conflict.conflict import resolve_conflict_locally
+from cal_engine.scheduling.derive import coalesce_occurrences, expand_occurrences, generate_derived
+from cal_engine.core.operations import add_activity, preview_activity
+from cal_engine.scheduling.review import run_review
+from cal_engine.core.storage import CalendarState
 
 REF = date(2026, 10, 12)  # Monday
 MON, THU = date(2026, 10, 12), date(2026, 10, 15)

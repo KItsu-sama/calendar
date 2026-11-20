@@ -2,7 +2,7 @@ import io
 
 from rich.console import Console
 
-from cal_engine.terminal import Terminal, terminal
+from cal_engine.ui.terminal import Terminal, terminal
 
 
 def _make_console() -> Console:

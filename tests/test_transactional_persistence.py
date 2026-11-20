@@ -19,7 +19,7 @@ from cal_engine import (
     digest_state,
     parse_command,
 )
-from cal_engine.transactional_persistence import _SNAPSHOT_INDEX_NAME
+from cal_engine.core.transactional_persistence import _SNAPSHOT_INDEX_NAME
 
 CALENDAR_PATH = "data/calendar.json"
 CONFIG_PATH = "groups_schedules.json"

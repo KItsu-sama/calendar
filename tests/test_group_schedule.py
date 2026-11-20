@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import json
 
-from cal_engine.group_schedule import (
+from cal_engine.groups.group_schedule import (
     GENERATED_PREFIX,
     export_to_calendar,
     load_config,
     save_config,
     validate_config,
 )
-from cal_engine.storage import CalendarState
+from cal_engine.core.storage import CalendarState
 
 
 def _explicit_test_config():
@@ -62,7 +62,7 @@ def test_config_round_trip_and_export_preserves_existing_calendar_rules(tmp_path
     loaded = load_config(config_path)
     assert loaded == config
 
-    from cal_engine.parser import parse_command
+    from cal_engine.core.parser import parse_command
 
     existing_rule = parse_command(
         "cal --fixed personal-study --daily --time 19:00-20:00"

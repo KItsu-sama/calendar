@@ -1,7 +1,7 @@
 from datetime import date, datetime
 
 from cal_engine import ScheduleResolver, parse_command
-from cal_engine.conflict import resolve_conflict_locally
+from cal_engine.conflict.conflict import resolve_conflict_locally
 
 REF = date(2026, 9, 21)  # Monday
 WED = date(2026, 9, 23)

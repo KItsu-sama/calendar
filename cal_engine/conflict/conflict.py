@@ -24,8 +24,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import List, Optional
 
-from .models import ActivityRule, Flexibility, Priority
-from .resolver import Interval, ScheduleResolver, day_code_for, next_occurrence
+from ..core.models import ActivityRule, Flexibility, Priority
+from ..core.resolver import Interval, ScheduleResolver, day_code_for, next_occurrence
 
 
 def find_overlapping_intervals(schedule: List[Interval], start: datetime, end: datetime) -> List[Interval]:

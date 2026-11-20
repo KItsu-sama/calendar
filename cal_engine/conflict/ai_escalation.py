@@ -19,8 +19,8 @@ from jsonschema import validate as _jsonschema_validate
 from jsonschema.exceptions import ValidationError as _SchemaValidationError
 
 from .conflict import LocalSolveResult
-from .models import ActivityRule
-from .resolver import Interval, ScheduleResolver
+from ..core.models import ActivityRule
+from ..core.resolver import Interval, ScheduleResolver
 
 # ---------------------------------------------------------------------------
 # 1. Prompt construction

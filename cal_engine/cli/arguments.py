@@ -9,11 +9,11 @@ from datetime import date, timedelta
 from typing import Optional
 
 
-from ..models import ActivityRule, CalendarException, RecurrenceType
-from ..operations import first_occurrence
-from ..parser import PRIMARY_FLAGS, parse_command, parse_dm_date
-from ..review import review_args
-from ..storage import CalendarState
+from ..core.models import ActivityRule, CalendarException, RecurrenceType
+from ..core.operations import first_occurrence
+from ..core.parser import PRIMARY_FLAGS, parse_command, parse_dm_date
+from ..scheduling.review import review_args
+from ..core.storage import CalendarState
 
 from .errors import CLIError
 

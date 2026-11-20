@@ -21,8 +21,8 @@ from tkinter import filedialog, ttk
 from tkinter import font as tkfont
 from typing import Any
 
-from .group_schedule import export_to_calendar, load_config, save_config
-from .models import (
+from ..groups.group_schedule import export_to_calendar, load_config, save_config
+from ..core.models import (
     ActivityRule,
     Flexibility,
     Priority,
@@ -31,7 +31,7 @@ from .models import (
     TimeConstraints,
     TimeWindow,
 )
-from .storage import CalendarState
+from ..core.storage import CalendarState
 
 # ── Palette ────────────────────────────────────────────────────────────────
 PAPER = "#FAFBFE"        # grid paper

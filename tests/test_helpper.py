@@ -2,10 +2,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from cal_engine.helpper import Help
+from cal_engine.ui.helpper import Help
 from cal_engine.cli import _helper_calendar_path
-from cal_engine.parser import parse_command
-from cal_engine.storage import CalendarState
+from cal_engine.core.parser import parse_command
+from cal_engine.core.storage import CalendarState
 
 
 def test_mutation_uses_active_calendar_and_resolved_entrypoint(tmp_path, monkeypatch):
@@ -18,7 +18,7 @@ def test_mutation_uses_active_calendar_and_resolved_entrypoint(tmp_path, monkeyp
         calls.append(command)
         return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr("cal_engine.helpper.subprocess.run", run)
+    monkeypatch.setattr("cal_engine.ui.helpper.subprocess.run", run)
 
     assert helper._run_mutation(["--add", "--fixed", "lunch"]) == 0
     assert calls == [[

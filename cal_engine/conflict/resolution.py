@@ -8,8 +8,8 @@ from uuid import uuid4
 
 from .ai_escalation import AIEscalationResult, LLMClient, escalate_to_ai
 from .conflict import LocalSolveResult, resolve_conflict_locally
-from .models import ActivityRule, CalendarException, activity_rule_from_dict
-from .operations import (
+from ..core.models import ActivityRule, CalendarException, activity_rule_from_dict
+from ..core.operations import (
     OperationError,
     add_activity,
     apply_schedule_changes,
@@ -19,9 +19,9 @@ from .operations import (
     is_protected,
     proposed_change_to_dict,
 )
-from .parser import parse_command
-from .storage import CalendarState
-from .transactions import (
+from ..core.parser import parse_command
+from ..core.storage import CalendarState
+from ..core.transactions import (
     TransactionError,
     TransactionLog,
     TransactionRecord,

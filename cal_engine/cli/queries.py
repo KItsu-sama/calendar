@@ -3,10 +3,10 @@
 
 from datetime import date, datetime, timedelta
 
-from ..ai_escalation import build_conflict_prompt, build_schedule_review_prompt
-from ..operations import conflicts_in_schedule, preview_activity
-from ..parser import PRIMARY_FLAGS, parse_time_range
-from ..storage import CalendarState
+from ..conflict.ai_escalation import build_conflict_prompt, build_schedule_review_prompt
+from ..core.operations import conflicts_in_schedule, preview_activity
+from ..core.parser import PRIMARY_FLAGS, parse_time_range
+from ..core.storage import CalendarState
 from .arguments import _activity_from_tokens, _parse_cli_date, _query_parser
 from .errors import CLIError
 from .output import _print_json

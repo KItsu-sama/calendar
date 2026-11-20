@@ -419,7 +419,7 @@ class CoordinatedStore:
         validator: Optional[Callable[[object], None]] = None,
     ) -> None:
         """Stage a :class:`~cal_engine.storage.CalendarState` as version-1 JSON."""
-        from .storage import CalendarState, StorageError
+        from ..core.storage import CalendarState, StorageError
 
         if not isinstance(state, CalendarState):
             raise TypeError("stage_calendar_state expects a CalendarState instance")
@@ -439,7 +439,7 @@ class CoordinatedStore:
         validator: Optional[Callable[[object], None]] = None,
     ) -> None:
         """Stage a group/schedule configuration JSON, validated with ``validate_config``."""
-        from .group_schedule import validate_config
+        from ..groups.group_schedule import validate_config
 
         if not isinstance(config, dict):
             raise TypeError("stage_group_config expects a dict")

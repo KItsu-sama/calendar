@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import List, Optional, Tuple, Union
 
-from .duration import DurationParseError, parse_duration_minutes
+from ..scheduling.duration import DurationParseError, parse_duration_minutes
 from .models import (
     ActivityRule,
     CalendarException,

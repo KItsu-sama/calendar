@@ -10,11 +10,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .models import (
+from ..core.models import (
     ActivityRule, Flexibility, Priority, Recurrence,
     RecurrenceType, TimeConstraints, TimeWindow,
 )
-from .storage import CalendarState, StorageError
+from ..core.storage import CalendarState, StorageError
 
 CONFIG_VERSION = 1
 GENERATED_PREFIX = "group_schedule__"

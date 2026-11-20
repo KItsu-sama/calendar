@@ -6,10 +6,10 @@ from datetime import date
 import shlex
 from pathlib import Path
 
-from ..change_log import log_change
-from ..parser import parse_command
-from ..review import review_handle
-from ..storage import CalendarState
+from ..scheduling.change_log import log_change
+from ..core.parser import parse_command
+from ..scheduling.review import review_handle
+from ..core.storage import CalendarState
 
 from .arguments import (
     DIRECT_ACTIONS,
@@ -19,7 +19,7 @@ from .arguments import (
     _parse_cli_date,
     _print_sample,
 )
-from ..helpper import Help
+from ..ui.helpper import Help
 from .errors import CLIError
 from .mutations import _run_mutation
 from .output import _print_json
@@ -49,7 +49,7 @@ def _execute_command(argv: list[str]) -> int:
         )
         with trace_stage("group_schedule.parse"):
             group_args = group_parser.parse_args(argv[1:])
-        from ..group_schedule import load_config, export_to_calendar
+        from ..groups.group_schedule import load_config, export_to_calendar
 
         if group_args.export_config:
             count = export_to_calendar(
@@ -62,12 +62,12 @@ def _execute_command(argv: list[str]) -> int:
                 "calendar": str(Path(group_args.calendar)),
             }, indent=2))
             return 0
-        from ..unified_gui import main as unified_main
+        from ..ui.unified_gui import main as unified_main
         unified_main()
         return 0
 
     if argv in (["gui"], ["--gui"]):
-        from ..gui import main as gui_main
+        from ..ui.gui import main as gui_main
         gui_main()
         return 0
 

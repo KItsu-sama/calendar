@@ -9,8 +9,8 @@ from cal_engine import (
     parse_command,
     parse_llm_response,
 )
-from cal_engine.ai_escalation import build_conflict_prompt
-from cal_engine.conflict import resolve_conflict_locally
+from cal_engine.conflict.ai_escalation import build_conflict_prompt
+from cal_engine.conflict.conflict import resolve_conflict_locally
 
 REF = date(2026, 9, 21)  # Monday
 WED = date(2026, 9, 23)
