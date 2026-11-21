@@ -2,14 +2,17 @@
 
 
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from ..conflict.ai_escalation import build_conflict_prompt, build_schedule_review_prompt
 from ..core.operations import conflicts_in_schedule, preview_activity
 from ..core.parser import PRIMARY_FLAGS, parse_time_range
 from ..core.storage import CalendarState
+from ..ui.helpper import _display_calendars
+from ..ui.terminal import Terminal
 from .arguments import _activity_from_tokens, _parse_cli_date, _query_parser
 from .errors import CLIError
-from .output import _print_json
+from .output import _print_json, print_activity
 
 
 def _run_query(
@@ -103,13 +106,68 @@ def _run_query(
 
 def _check_activity(name, state):
     """Display the current configuration of one activity."""
-    
-    return
+    rule = state.get_rule(name)
+    if rule is None:
+        raise CLIError(f"Unknown activity '{name}'.")
+    print_activity(rule, console=Terminal().console)
 
 
 def _check_group(name, config):
     """Display a group's configuration and associated activities."""
-    ...
+    groups = config.get("groups", []) if isinstance(config, dict) else []
+    group = next((g for g in groups if str(g.get("id", "")) == name), None)
+    if group is None:
+        group = next((g for g in groups if str(g.get("name", "")) == name), None)
+    if group is None:
+        raise CLIError(f"Unknown group '{name}'.")
+
+    terminal = Terminal()
+    terminal.rule(f"Group: {group.get('name')} [{group.get('id')}]")
+    terminal.print(f"  description: {group.get('description', '')}")
+    terminal.print(f"  priority: {group.get('priority', 'NORMAL')}")
+    terminal.print(f"  flexibility: {group.get('flexibility', 'FIXED')}")
+    terminal.print(f"  override_policy: {group.get('override_policy', 'never')}")
+
+    group_id = group.get("id")
+    schedules = [
+        schedule for schedule in config.get("schedules", [])
+        if schedule.get("group_id") == group_id
+    ]
+    if not schedules:
+        terminal.info("No schedules associated with this group.")
+        return
+
+    terminal.print(f"Schedules ({len(schedules)}):")
+    for schedule in schedules:
+        terminal.print(f"  {schedule.get('id')} ({schedule.get('group_id')})")
+        terminal.print(f"    days: {', '.join(schedule.get('days', []))}")
+        terminal.print(
+            f"    time: {schedule.get('start_time', '')} - {schedule.get('end_time', '')}"
+        )
+        terminal.print(f"    period: {schedule.get('period_minutes', '?')} minutes")
+
+        activities = schedule.get("activities", [])
+        if activities:
+            terminal.print("    Activities:")
+            for activity in activities:
+                terminal.print(
+                    "      - "
+                    f"{activity.get('name', '')} [{activity.get('id', '')}] "
+                    f"{activity.get('day', '')} "
+                    f"{activity.get('start_time', '')}-{activity.get('end_time', '')}"
+                )
+
+        breaks = schedule.get("breaks", [])
+        if breaks:
+            terminal.print("    Breaks:")
+            for br in breaks:
+                terminal.print(
+                    "      - "
+                    f"{br.get('name', 'Break')} [{br.get('id', '')}] "
+                    f"{br.get('start_time', '')}-{br.get('end_time', '')} "
+                    f"(override_policy={br.get('override_policy', 'overrideable')}, "
+                    f"priority={br.get('priority', 'HIGH')})"
+                )
 
 
 def _query_range(args, reference: date) -> tuple[date, date]:
@@ -119,3 +177,14 @@ def _query_range(args, reference: date) -> tuple[date, date]:
     if end < start:
         raise CLIError("Query end date must not precede its start date.")
     return start, end
+
+
+def _list_calendars(calendar_path: str | Path | None = None) -> int:
+    """List available calendar files and report the active calendar.
+
+    Shares the calendar display with ``cal_engine.ui.helpper`` so the CLI and
+    the interactive helper render calendars identically.
+    """
+    active = Path(calendar_path) if calendar_path else Path.cwd() / "calendar.json"
+    _display_calendars(Terminal(), active)
+    return 0

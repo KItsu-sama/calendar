@@ -30,15 +30,19 @@ _MASTER_ACTIONS = (
     "--preview",
     "--generate-prompt",
     "--check",
+    "--list-calendars",
     "--reset",
 )
 
 DIRECT_ACTIONS = {
+    # Master --tag actions
     *_MASTER_ACTIONS,
-    "--batch",
+    # Bare commands
     "batch",
     "today",
     "week",
+    # Review/export/profile/relations/snapshot tags
+    "--batch",
     "--review",
     "--watch",
     "--export-commands",

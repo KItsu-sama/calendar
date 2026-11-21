@@ -33,6 +33,50 @@ class _InteractionCancelled(Exception):
     pass
 
 
+def _calendar_candidates() -> list[Path]:
+    roots = [Path.cwd(), Path(__file__).resolve().parents[1]]
+    candidates = []
+    seen = set()
+    for root in roots:
+        standard = (root / "data" / "calendar.json", root / "calendar.json")
+        extras = [
+            path
+            for path in sorted(root.glob("*.json")) + sorted((root / "data").glob("*.json"))
+            if "calendar" in path.name.lower()
+        ]
+        for candidate in (*standard, *extras):
+            resolved = candidate.resolve()
+            if resolved not in seen:
+                candidates.append(candidate)
+                seen.add(resolved)
+    return candidates
+
+
+def _available_calendars() -> list[Path]:
+    candidates = _calendar_candidates()
+    return [path for path in candidates if path.is_file()]
+
+
+def _display_calendars(terminal: Terminal, calendar_path: Path) -> None:
+    """Print available calendar files and the active calendar path.
+
+    Shared by the interactive helper (``Help``) and the read-only CLI queries
+    so both render calendars identically.
+    """
+    calendars = _available_calendars()
+    terminal.rule("Calendars")
+    if calendars:
+        terminal.info("Available calendar files:")
+        for path in calendars:
+            print(f"  {path}")
+    else:
+        terminal.info(
+            "No calendar files found; a new calendar will be created at:"
+        )
+        print(f"  {calendar_path}")
+    terminal.info(f"Active calendar: {calendar_path}")
+
+
 class Help:
     def __init__(
         self,
@@ -45,35 +89,12 @@ class Help:
         self.terminal = Terminal()
         self.debug_enabled = debug_enabled
 
-    @staticmethod
-    def _calendar_candidates() -> list[Path]:
-        roots = [Path.cwd(), Path(__file__).resolve().parents[1]]
-        candidates = []
-        seen = set()
-        for root in roots:
-            standard = (root / "data" / "calendar.json", root / "calendar.json")
-            extras = [
-                path
-                for path in sorted(root.glob("*.json")) + sorted((root / "data").glob("*.json"))
-                if "calendar" in path.name.lower()
-            ]
-            for candidate in (*standard, *extras):
-                resolved = candidate.resolve()
-                if resolved not in seen:
-                    candidates.append(candidate)
-                    seen.add(resolved)
-        return candidates
-
     @classmethod
     def _default_calendar_path(cls) -> Path:
-        for candidate in cls._calendar_candidates():
+        for candidate in _calendar_candidates():
             if candidate.is_file():
                 return candidate
         return Path.cwd() / "calendar.json"
-
-    def _available_calendars(self) -> list[Path]:
-        candidates = self._calendar_candidates()
-        return [path for path in candidates if path.is_file()]
 
     @staticmethod
     def _input(prompt: str) -> str:
@@ -86,7 +107,10 @@ class Help:
         if self.debug_enabled and "--debug" not in args:
             args = [*args, "--debug"]
         result = subprocess.run([self.python, str(self.entrypoint), *args])
+        if self._ask_yes_no("Exit? (y/n): "):
+            sys.exit(0)
         return result.returncode
+            
 
     def _run_query(self, args: list[str]) -> int:
         prefix = ["--load", str(self.calendar_path)] if self.calendar_path.is_file() else []
@@ -111,6 +135,10 @@ class Help:
             if answer in {"n", "no"}:
                 return False
             self.terminal.warning("Enter y or n.")
+
+    def _ask_exit(self) -> bool:
+        _ = self._ask_yes_no("Exit? (y/n): ")
+        return _
 
     def _ask_value(
         self,
@@ -169,22 +197,8 @@ class Help:
         elif isinstance(parsed, CalendarException):
             validate_calendar_exception(parsed)
 
-    def _display_calendars(self) -> None:
-        calendars = self._available_calendars()
-        self.terminal.rule("Calendars")
-        if calendars:
-            self.terminal.info("Available calendar files:")
-            for path in calendars:
-                print(f"  {path}")
-        else:
-            self.terminal.info(
-                "No calendar files found; a new calendar will be created at:"
-            )
-            print(f"  {self.calendar_path}")
-        self.terminal.info(f"Active calendar: {self.calendar_path}")
-
     def _select_calendar(self) -> int:
-        calendars = self._available_calendars()
+        calendars = _available_calendars()
         if not calendars:
             self.terminal.warning("No existing calendar files were found.")
             path = self._input("Calendar file path for the new calendar: ")
@@ -227,7 +241,7 @@ class Help:
         if error:
             self.terminal.console.print(f"[error]Error:[/error] {error}", file=sys.stderr)
             print(file=sys.stderr)
-        self._display_calendars()
+        _display_calendars(self.terminal, self.calendar_path)
         while True:
             self.terminal.rule("What do you want to do?")
             print("1. Show command help")
@@ -239,24 +253,24 @@ class Help:
             print("7. Exit")
             choice = self._ask_choice("> ", {"1", "2", "3", "4", "5", "6", "7"})
             if choice == "1":
-                return self._run(["-h"])
-            if choice == "2":
-                return self._run_query(["--schedule", "--date", date.today().isoformat()])
-            if choice == "3":
+                self._run(["-h"])
+            elif choice == "2":
+                self._run_query(["--schedule", "--date", date.today().isoformat()])
+            elif choice == "3":
                 today = date.today()
                 monday = today - timedelta(days=today.weekday())
                 sunday = monday + timedelta(days=6)
-                return self._run_query([
+                self._run_query([
                     "--schedule", "--from", monday.isoformat(), "--to", sunday.isoformat()
                 ])
-            if choice == "4":
-                return self.create_activity()
-            if choice == "5":
-                return self.manage_activities()
-            if choice == "6":
+            elif choice == "4":
+                self.create_activity()
+            elif choice == "5":
+                self.manage_activities()
+            elif choice == "6":
                 self._select_calendar()
-                self._display_calendars()
-            if choice == "7":
+                _display_calendars(self.terminal, self.calendar_path)
+            elif choice == "7":
                 return 0
 
     def help(self) -> int:
@@ -266,10 +280,11 @@ class Help:
     def create_activity(self) -> int:
         """Interactive helper for creating an activity."""
         try:
-            return self._create_activity()
+            self._create_activity()
         except _InteractionCancelled:
             print()
             return 2
+        return 0
 
     def _create_activity(self) -> int:
         self.terminal.rule("Create activity")
@@ -289,7 +304,9 @@ class Help:
             "5": self.build_exception,
             "6": self._assist,
         }
-        return builders[choice]() if choice in builders else 0
+        if choice in builders:
+            builders[choice]()
+        return 0
 
     def _ask_name(self) -> str:
         while True:
@@ -500,10 +517,11 @@ class Help:
 
     def manage_activities(self) -> int:
         try:
-            return self._manage_activities()
+            self._manage_activities()
         except _InteractionCancelled:
             print()
             return 2
+        return 0
 
     def _manage_activities(self) -> int:
         if not self.calendar_path.is_file():
@@ -544,7 +562,8 @@ class Help:
             if not self._ask_yes_no("Remove this activity? (y/n): "):
                 self.terminal.info("No changes made.")
                 return 0
-            return self._run_mutation(["--remove", rule.id])
+            self._run_mutation(["--remove", rule.id])
+            return 0
 
         if action == "1":
             value = self._ask_value(
@@ -565,4 +584,5 @@ class Help:
         if not self._ask_yes_no("Apply this change? (y/n): "):
             self.terminal.info("No changes made.")
             return 0
-        return self._run_mutation(command)
+        self._run_mutation(command)
+        return 0

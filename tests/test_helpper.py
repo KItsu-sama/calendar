@@ -1,8 +1,15 @@
+import contextlib
+import io
+from pathlib import Path
+
+from rich.console import Console
+
 from types import SimpleNamespace
 
 import pytest
 
-from cal_engine.ui.helpper import Help
+from cal_engine.ui.helpper import Help, _display_calendars
+from cal_engine.ui.terminal import Terminal
 from cal_engine.cli import _helper_calendar_path
 from cal_engine.core.parser import parse_command
 from cal_engine.core.storage import CalendarState
@@ -90,3 +97,34 @@ def test_cli_error_helper_keeps_load_path_and_uses_save_as_fallback():
         "data/custom.json"
     )
     assert _helper_calendar_path(["--save=custom.json", "--fixed"]) == "custom.json"
+
+
+def test_display_calendars_lists_available_files(monkeypatch):
+    console = Console(file=io.StringIO(), width=200)
+    terminal = Terminal(console=console)
+    monkeypatch.setattr(
+        "cal_engine.ui.helpper._available_calendars",
+        lambda: [Path("data/calendar.json"), Path("data/work.json")],
+    )
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        _display_calendars(terminal, Path("data/calendar.json"))
+    text = console.file.getvalue()
+    stdout = out.getvalue()
+    assert "Calendars" in text
+    assert "Available calendar files:" in text
+    assert str(Path("data/calendar.json")) in stdout
+    assert str(Path("data/work.json")) in stdout
+    assert f"Active calendar: {Path('data/calendar.json')}" in text
+
+
+def test_display_calendars_empty_reports_active_path(monkeypatch):
+    console = Console(file=io.StringIO(), width=200)
+    terminal = Terminal(console=console)
+    monkeypatch.setattr("cal_engine.ui.helpper._available_calendars", lambda: [])
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        _display_calendars(terminal, Path("calendar.json"))
+    text = console.file.getvalue()
+    assert "No calendar files found" in text
+    assert f"Active calendar: {Path('calendar.json')}" in text
