@@ -23,6 +23,7 @@ echo 1. Open Calendar GUI
 echo 2. Run CLI Command (Normal)
 echo 3. Run CLI Command (Debug Mode)
 echo 4. Show CLI help
+echo 5. Open Group Timetable Editor
 echo 0. Exit
 echo.
 set /p "choice=Choose an option: "
@@ -31,6 +32,7 @@ if "%choice%"=="1" goto calendar_gui
 if "%choice%"=="2" goto cmd_normal
 if "%choice%"=="3" goto cmd_debug
 if "%choice%"=="4" goto cli_help
+if "%choice%"=="5" goto group_editor
 if "%choice%"=="0" goto end
 echo Invalid choice.
 goto menu

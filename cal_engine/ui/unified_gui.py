@@ -17,7 +17,7 @@ import tkinter as tk
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
 from typing import Any
 
@@ -242,6 +242,7 @@ class UnifiedCalendarGUI:
         self.draft: tuple[date, int, int] | None = None
         self.edit_rule_id: str | None = None
         self.slot_ctx: dict[str, Any] | None = None
+        self.sl_groups: list[str] = []  # group_ids the current slot activity belongs to
         self.group_id: str | None = None
         self.hour_range = (6, 22)
         self._undo: list[tuple] = []
@@ -328,6 +329,9 @@ class UnifiedCalendarGUI:
         menu = tk.Menu(files, tearoff=False, font=self.f_ui)
         menu.add_command(label="Open calendar…", command=self._browse_calendar)
         menu.add_command(label="Open group rules…", command=self._browse_config)
+        menu.add_command(
+            label="Open group editor…", command=self._open_group_editor
+        )
         menu.add_command(label="Reload from disk", command=self._load_data)
         menu.add_separator()
         menu.add_command(label="Undo last change    Ctrl+Z", command=self._undo_last)
@@ -508,6 +512,23 @@ class UnifiedCalendarGUI:
         colors = dict(PRIORITY)
         colors[""] = (WHITE, INK_SOFT)
         Chips(p, [("", "Inherit")] + PRIORITY_LABELS, self.sl_priority, self.f_small, colors).pack(anchor="w", pady=(3, 14))
+
+        # ── Groups ──────────────────────────────────────────────────────
+        self._label(p, "Groups").pack(anchor="w", pady=(14, 2))
+        self.sl_groups_lbl = tk.Label(p, text="", font=self.f_small, bg=PANEL, fg=INK_SOFT, anchor="w",
+                                      wraplength=self.S(280), justify="left")
+        self.sl_groups_lbl.pack(fill="x", pady=(0, 4))
+        grp_row = tk.Frame(p, bg=PANEL)
+        grp_row.pack(fill="x", pady=(0, 6))
+        self.sl_group_var = tk.StringVar(value="")
+        self.sl_group_combo = ttk.Combobox(grp_row, textvariable=self.sl_group_var, state="readonly",
+                                           width=22, font=self.f_small)
+        self.sl_group_combo.pack(side="left", fill="x", expand=True)
+        ttk.Button(grp_row, text="Add", style="Quiet.TButton", command=self._slot_add_to_group).pack(
+            side="left", padx=(6, 0))
+        ttk.Button(grp_row, text="Remove", style="Quiet.TButton", command=self._slot_remove_from_group).pack(
+            side="left", padx=(6, 0))
+
         tk.Label(p, textvariable=self.sl_error, font=self.f_small, bg=PANEL, fg=ERROR, anchor="w",
                  wraplength=self.S(280), justify="left").pack(fill="x", pady=(0, 6))
         btns = tk.Frame(p, bg=PANEL)
@@ -518,6 +539,8 @@ class UnifiedCalendarGUI:
         ttk.Button(btns, text="Close", style="Quiet.TButton", command=self._close_panel).pack(side="right")
         ttk.Button(p, text="Edit timetable rules", style="Quiet.TButton", command=self._open_group_from_slot).pack(
             anchor="w", pady=(10, 0))
+        ttk.Button(p, text="Open full group editor…", style="Quiet.TButton", command=self._open_group_editor).pack(
+            anchor="w", pady=(6, 0))
 
         # timetable rules
         p = self.panels["group"]
@@ -619,6 +642,55 @@ class UnifiedCalendarGUI:
         if name:
             self.config_path = Path(name)
             self._load_data()
+
+    def _open_group_editor(self):
+        """Open the dedicated multi-group timetable editor beside this calendar.
+
+        The editor shares this window's group/schedule configuration file, so
+        groups created or edited there can be exported to the calendar and are
+        visible here again once the editor is closed.
+
+        The editor is modeless (non-modal): you can keep working in the calendar
+        grid while the group editor is open. Whenever the group editor saves its
+        configuration, this calendar automatically reloads so both sides stay in
+        sync.
+        """
+        from ..groups.group_schedule_gui import GroupScheduleEditor
+
+        editor = tk.Toplevel(self.root)
+        editor.title("cal — Group Timetable Editor")
+        editor.geometry("1120x760")
+
+        def _on_save():
+            try:
+                self._load_data()
+                self.status_var.set("Group timetables reloaded from editor")
+            except Exception as exc:
+                self.status_var.set(f"Reload after group save failed: {exc}")
+
+        def _on_close():
+            editor.destroy()
+
+        try:
+            group_editor = GroupScheduleEditor(editor, config_path=self.config_path)
+        except Exception as exc:
+            editor.destroy()
+            messagebox.showerror("Group editor", f"Couldn't open the group editor:\n{exc}")
+            return
+
+        # Hook into the editor instance's save so the calendar reflects changes
+        # immediately whenever the user saves in the group editor.
+        original_save = group_editor.save
+
+        def _wrapped_save(*args, **kwargs):
+            result = original_save(*args, **kwargs)
+            _on_save()
+            return result
+
+        group_editor.save = _wrapped_save
+
+        editor.protocol("WM_DELETE_WINDOW", _on_close)
+        # Modeless: do NOT call wait_window — both windows stay interactive.
 
     def _snapshot(self):
         self._undo.append((copy.deepcopy(self.state), copy.deepcopy(self.config)))
@@ -1175,17 +1247,81 @@ class UnifiedCalendarGUI:
             return
         group = self._group(sched["group_id"]) or {}
         code = DAYS[b.start.weekday()]
-        self.slot_ctx = {"sched": sched, "day": code, "period": b.period, "act": b.act, "date": b.start.date()}
+        act = b.act or {}
+        self.slot_ctx = {"sched": sched, "day": code, "period": b.period, "act": act, "date": b.start.date()}
         self.sl_title.set(f"{group.get('name', 'Timetable')}  ·  slot {b.period}")
         self.sl_sub.set(f"{DAY_LONG[b.start.weekday()]}, repeats every week")
-        self.sl_name.set((b.act or {}).get("name", ""))
+        self.sl_name.set(act.get("name", ""))
         self.sl_start.set(_clock(b.start_min))
         self.sl_end.set(_clock(b.end_min))
-        self.sl_priority.set((b.act or {}).get("priority", ""))
+        self.sl_priority.set(act.get("priority", ""))
         self.sl_error.set("")
-        self.sl_clear.state(["!disabled"] if b.act else ["disabled"])
+        self.sl_clear.state(["!disabled"] if act else ["disabled"])
+
+        # ── groups the activity belongs to ──────────────────────────
+        self.sl_groups = list(act.get("group_ids", []))
+        self._refresh_slot_group_ui()
         self._show_panel("slot")
         self.sl_name_entry.focus_set()
+
+    def _refresh_slot_group_ui(self):
+        """Update the groups label and dropdown for the current slot activity."""
+        if not self.sl_groups:
+            self.sl_groups_lbl.configure(text="Not in any group.")
+        else:
+            names = []
+            for gid in self.sl_groups:
+                g = self._group(gid)
+                names.append(g.get("name", gid) if g else gid)
+            self.sl_groups_lbl.configure(text="In: " + ", ".join(names))
+
+        # populate dropdown with groups this activity is NOT already in
+        available = []
+        for g in self.config.get("groups", []):
+            if g["id"] not in self.sl_groups:
+                available.append(f"{g.get('name', g['id'])}  ({g['id']})")
+        self.sl_group_combo["values"] = available
+        if available:
+            self.sl_group_combo.set(available[0])
+        else:
+            self.sl_group_combo.set("")
+
+    def _slot_add_to_group(self):
+        """Add the current slot activity to the selected group."""
+        ctx = self.slot_ctx
+        if not ctx or not ctx.get("act"):
+            return messagebox.showinfo("Add to group", "Save the slot first before adding it to a group.")
+        selected = self.sl_group_var.get().strip()
+        if not selected or "(" not in selected:
+            return messagebox.showinfo("Add to group", "Pick a group from the dropdown.")
+        gid = selected.split("(", 1)[1].rstrip(")").strip()
+        if gid in self.sl_groups:
+            return messagebox.showinfo("Add to group", "This activity is already in that group.")
+        act = ctx["act"]
+        act.setdefault("group_ids", [])
+        if gid not in act["group_ids"]:
+            act["group_ids"].append(gid)
+        self.sl_groups = list(act["group_ids"])
+        self._refresh_slot_group_ui()
+        self._save_slot()
+        self._saved(f"Added to group {gid}")
+
+    def _slot_remove_from_group(self):
+        """Remove the current slot activity from the selected group."""
+        ctx = self.slot_ctx
+        if not ctx or not ctx.get("act"):
+            return messagebox.showinfo("Remove from group", "Save the slot first before removing it from a group.")
+        selected = self.sl_group_var.get().strip()
+        if not selected or "(" not in selected:
+            return messagebox.showinfo("Remove from group", "Pick a group from the dropdown.")
+        gid = selected.split("(", 1)[1].rstrip(")").strip()
+        act = ctx["act"]
+        if gid in act.get("group_ids", []):
+            act["group_ids"].remove(gid)
+        self.sl_groups = list(act.get("group_ids", []))
+        self._refresh_slot_group_ui()
+        self._save_slot()
+        self._saved(f"Removed from group {gid}")
 
     def _open_group_from_slot(self):
         if self.slot_ctx:
@@ -1305,6 +1441,8 @@ class UnifiedCalendarGUI:
                 act = {"id": f"{ctx['day'].lower()}_p{ctx['period']}", "day": ctx["day"], "period": ctx["period"]}
                 activities.append(act)
             act.update({"name": name, "start_time": _clock(s), "end_time": _clock(e)})
+            # preserve any group_ids the activity already has (from add/remove group)
+            act.setdefault("group_ids", [])
             if self.sl_priority.get():
                 act["priority"] = self.sl_priority.get()
             else:

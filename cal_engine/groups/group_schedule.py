@@ -1,7 +1,21 @@
-"""Editable group/schedule configuration and bridge to the existing cal state.
+"""Group / timetable configuration and bridge to the existing cal state.
 
-This is intentionally additive: group metadata lives in a separate JSON file so
-existing version-1 data//calendar.json files remain schema-compatible.
+Design
+------
+Group : organizational metadata only (``id``, ``name``, ``description``).
+        Groups categorize activities; they never carry scheduling policy.
+Timetable : scheduling rules (formerly ``schedules``). A timetable holds a set
+        of slots/activities plus breaks, active days, default times, a slot
+        length and an optional ``place_tag`` so a whole timetable can be
+        re-timed or re-placed and swapped out easily.
+
+An activity may belong to several groups (``group_ids``) or to none, and the
+same activity can be referenced by several timetables. Deleting a group or a
+timetable never deletes the activities themselves, and deleting a timetable
+never touches already-exported calendar history.
+
+This is intentionally additive: configuration lives in a separate JSON file so
+existing version-1 calendar.json files remain schema-compatible.
 """
 from __future__ import annotations
 
@@ -16,8 +30,8 @@ from ..core.models import (
 )
 from ..core.storage import CalendarState, StorageError
 
-CONFIG_VERSION = 1
-GENERATED_PREFIX = "group_schedule__"
+CONFIG_VERSION = 2
+GENERATED_PREFIX = "timetable__"
 DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -46,50 +60,57 @@ def _check_window(start: str, end: str, label: str) -> None:
         raise ValueError(f"{label}: start/end must be valid HH:MM times and start must be before end.")
 
 
+def _valid_group_ids(value: Any, label: str) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(x, str) and x.strip() for x in value):
+        raise ValueError(f"{label}: group_ids must be an array of non-empty strings.")
+    return [x.strip() for x in value]
+
+
 def validate_config(config: dict[str, Any]) -> None:
     if not isinstance(config, dict) or config.get("version") != CONFIG_VERSION:
-        raise ValueError("Configuration must be an object with version 1.")
-    groups, schedules = config.get("groups"), config.get("schedules")
-    if not isinstance(groups, list) or not isinstance(schedules, list):
-        raise ValueError("Configuration needs 'groups' and 'schedules' arrays.")
+        raise ValueError(f"Configuration must be an object with version {CONFIG_VERSION}.")
+    groups, timetables = config.get("groups"), config.get("timetables")
+    if not isinstance(groups, list) or not isinstance(timetables, list):
+        raise ValueError("Configuration needs 'groups' and 'timetables' arrays.")
     group_ids = [str(g.get("id", "")).strip() for g in groups]
     if any(not x for x in group_ids) or len(group_ids) != len(set(group_ids)):
         raise ValueError("Group IDs must be non-empty and unique.")
     for g in groups:
-        if g.get("priority", "NORMAL") not in {p.value for p in Priority}:
-            raise ValueError(f"Invalid priority in group {g.get('id')}.")
-        if g.get("flexibility", "FIXED") not in {f.value for f in Flexibility}:
-            raise ValueError(f"Invalid flexibility in group {g.get('id')}.")
-        if g.get("override_policy", "never") not in {"never", "overrideable", "always"}:
-            raise ValueError(f"Invalid override_policy in group {g.get('id')}.")
-    schedule_ids = [str(s.get("id", "")).strip() for s in schedules]
-    if any(not x for x in schedule_ids) or len(schedule_ids) != len(set(schedule_ids)):
-        raise ValueError("Schedule IDs must be non-empty and unique.")
-    for s in schedules:
-        if s.get("group_id") not in group_ids:
-            raise ValueError(f"Schedule '{s.get('id')}' refers to an unknown group.")
-        _check_window(s.get("start_time", ""), s.get("end_time", ""), f"Schedule {s.get('id')}")
-        if not isinstance(s.get("period_minutes"), int) or s["period_minutes"] <= 0:
-            raise ValueError(f"Schedule '{s.get('id')}' period_minutes must be a positive integer.")
-        if not isinstance(s.get("days"), list) or any(d not in DAYS for d in s["days"]):
-            raise ValueError(f"Schedule '{s.get('id')}' days must be weekday codes MON..SUN.")
-        activities = s.get("activities", [])
+        # Groups are organizational metadata only: id, name and description.
+        # They deliberately carry no scheduling policy (priority, flexibility,
+        # override_policy). Scheduling belongs to the timetable.
+        if not isinstance(g.get("name", ""), str) or not g.get("name", "").strip():
+            raise ValueError(f"Group '{g.get('id')}' needs a non-empty name.")
+    timetable_ids = [str(t.get("id", "")).strip() for t in timetables]
+    if any(not x for x in timetable_ids) or len(timetable_ids) != len(set(timetable_ids)):
+        raise ValueError("Timetable IDs must be non-empty and unique.")
+    for t in timetables:
+        _check_window(t.get("start_time", ""), t.get("end_time", ""), f"Timetable {t.get('id')}")
+        if not isinstance(t.get("period_minutes"), int) or t["period_minutes"] <= 0:
+            raise ValueError(f"Timetable '{t.get('id')}' period_minutes must be a positive integer.")
+        if not isinstance(t.get("days"), list) or any(d not in DAYS for d in t["days"]):
+            raise ValueError(f"Timetable '{t.get('id')}' days must be weekday codes MON..SUN.")
+        place_tag = t.get("place_tag")
+        if place_tag is not None and not isinstance(place_tag, str):
+            raise ValueError(f"Timetable '{t.get('id')}' place_tag must be a string.")
+        activities = t.get("activities", [])
         if not isinstance(activities, list):
-            raise ValueError(f"Schedule '{s.get('id')}' activities must be an array.")
+            raise ValueError(f"Timetable '{t.get('id')}' activities must be an array.")
         seen = set()
         for a in activities:
             aid = str(a.get("id", "")).strip()
             if not aid or aid in seen:
-                raise ValueError(f"Activity IDs in schedule '{s.get('id')}' must be unique and non-empty.")
+                raise ValueError(f"Activity IDs in timetable '{t.get('id')}' must be unique and non-empty.")
             seen.add(aid)
             if a.get("day") not in DAYS or not str(a.get("name", "")).strip():
                 raise ValueError(f"Activity '{aid}' needs a valid day and name.")
             _check_window(a.get("start_time", ""), a.get("end_time", ""), f"Activity {aid}")
-        for b in s.get("breaks", []):
+            _valid_group_ids(a.get("group_ids", []), f"Activity {aid} group_ids")
+            if a.get("priority") is not None and a.get("priority") not in {p.value for p in Priority}:
+                raise ValueError(f"Invalid priority for activity {aid}.")
+        for b in t.get("breaks", []):
             _check_window(b.get("start_time", ""), b.get("end_time", ""), f"Break {b.get('id', '')}")
-            if b.get("override_policy", "overrideable") not in {"never", "overrideable", "always"}:
-                raise ValueError("Invalid override policy for break.")
-            if b.get("priority", "HIGH") not in {p.value for p in Priority}:
+            if b.get("priority") is not None and b.get("priority") not in {p.value for p in Priority}:
                 raise ValueError("Invalid priority for break.")
 
 
@@ -98,6 +119,9 @@ def export_to_calendar(config: dict[str, Any], calendar_path: str | Path) -> int
 
     Only rules created by this exporter (the reserved prefix) are replaced.
     Existing unrelated activities and their exceptions are retained.
+    Exporting a timetable turns its slots/breaks into weekly core calendar
+    rules; the generated rules are independent copies, so deleting or editing a
+    timetable later never affects calendar history that was already exported.
     """
     validate_config(config)
     target = Path(calendar_path)
@@ -105,31 +129,28 @@ def export_to_calendar(config: dict[str, Any], calendar_path: str | Path) -> int
     old_ids = {r.id for r in state.rules if r.id.startswith(GENERATED_PREFIX)}
     state.rules = [r for r in state.rules if r.id not in old_ids]
     state.exceptions = [e for e in state.exceptions if e.rule_id not in old_ids]
-    groups = {g["id"]: g for g in config["groups"]}
     generated: list[ActivityRule] = []
-    for schedule in config["schedules"]:
-        group = groups[schedule["group_id"]]
-        for activity in schedule.get("activities", []):
+    for timetable in config["timetables"]:
+        for activity in timetable.get("activities", []):
             day = activity["day"]
-            if day not in schedule["days"]:
+            if day not in timetable["days"]:
                 continue
-            aid = f"{GENERATED_PREFIX}{schedule['id']}__{activity['id']}"
+            aid = f"{GENERATED_PREFIX}{timetable['id']}__{activity['id']}"
             generated.append(ActivityRule(
                 id=aid,
                 name=f"{activity['name']} ({day} P{activity.get('period', '?')})",
-                flexibility=Flexibility(group.get("flexibility", "FIXED")),
-                priority=Priority(activity.get("priority", group.get("priority", "HIGH"))),
+                flexibility=Flexibility.FIXED,
+                priority=Priority(activity.get("priority", "NORMAL")),
                 recurrence=Recurrence(type=RecurrenceType.WEEKLY, days_of_week=[day]),
                 time_constraints=TimeConstraints(fixed_interval=TimeWindow(activity["start_time"], activity["end_time"])),
+                group_ids=list(activity.get("group_ids", [])),
             ))
-        for br in schedule.get("breaks", []):
-            for day in schedule["days"]:
-                aid = f"{GENERATED_PREFIX}{schedule['id']}__{br.get('id','break')}__{day}"
+        for br in timetable.get("breaks", []):
+            for day in timetable["days"]:
+                aid = f"{GENERATED_PREFIX}{timetable['id']}__{br.get('id','break')}__{day}"
                 generated.append(ActivityRule(
                     id=aid, name=f"{br.get('name','Break')} ({day})",
-                    # The core engine has no explicit override_policy field. CHANGEABLE
-                    # communicates that this high-priority block may be displaced.
-                    flexibility=Flexibility.CHANGEABLE if br.get("override_policy", "overrideable") != "never" else Flexibility.FIXED,
+                    flexibility=Flexibility.FIXED,
                     priority=Priority(br.get("priority", "HIGH")),
                     recurrence=Recurrence(type=RecurrenceType.WEEKLY, days_of_week=[day]),
                     time_constraints=TimeConstraints(fixed_interval=TimeWindow(br["start_time"], br["end_time"])),

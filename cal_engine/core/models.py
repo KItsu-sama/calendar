@@ -136,6 +136,10 @@ class ActivityRule:
     recurrence: Recurrence
     time_constraints: TimeConstraints
     move_options: Optional[MoveOptions] = None
+    # Organizational categories this activity belongs to. An activity may be
+    # listed under several groups (overlapping categories) or under none; the
+    # group is purely metadata and never drives scheduling policy.
+    group_ids: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = {
@@ -148,6 +152,8 @@ class ActivityRule:
         }
         if self.move_options and self.move_options.preferred_days:
             d["move_options"] = self.move_options.to_dict()
+        if self.group_ids:
+            d["group_ids"] = list(self.group_ids)
         return d
 
 
@@ -228,6 +234,7 @@ def activity_rule_from_dict(data: dict) -> ActivityRule:
         move_options=MoveOptions(preferred_days=list(move_data.get("preferred_days", [])))
         if move_data
         else None,
+        group_ids=list(data.get("group_ids", [])),
     )
 
 
@@ -302,6 +309,11 @@ ACTIVITY_RULE_SCHEMA = {
                     "properties": {
                         "preferred_days": {"type": "array", "items": {"type": "string", "enum": DAY_NAMES}},
                     },
+                },
+                "group_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Organizational group IDs this activity is categorized under.",
                 },
             },
             "required": ["id", "name", "flexibility", "priority", "recurrence", "time_constraints"],

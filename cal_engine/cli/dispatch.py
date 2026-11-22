@@ -44,8 +44,8 @@ def _execute_command(argv: list[str]) -> int:
         )
         group_parser.add_argument(
             "--calendar",
-            default="data//data/calendar.json",
-            help="Calendar JSON destination for --export-config (default: data//calendar.json).",
+            default="data/calendar.json",
+            help="Calendar JSON destination for --export-config (default: data/calendar.json).",
         )
         with trace_stage("group_schedule.parse"):
             group_args = group_parser.parse_args(argv[1:])
@@ -62,8 +62,8 @@ def _execute_command(argv: list[str]) -> int:
                 "calendar": str(Path(group_args.calendar)),
             }, indent=2))
             return 0
-        from ..ui.unified_gui import main as unified_main
-        unified_main()
+        from ..groups.group_schedule_gui import main as group_editor_main
+        group_editor_main()
         return 0
 
     if argv in (["gui"], ["--gui"]):

@@ -116,8 +116,12 @@ python main.py --help
 python main.py gui
 ```
 
-On Windows, run `run_calendar.cmd` for the launcher menu. The unified GUI can
-also be opened with `python main.py group-schedule`.
+On Windows, run `run_calendar.cmd` for the launcher menu: use "Open Calendar
+GUI" (`python main.py gui`) for the calendar, or "Open Group Timetable
+Editor" (`python main.py group-schedule`) to manage groups and export
+timetables. From the unified GUI, the Files menu's "Open group editor…"
+opens the same group timetable editor alongside the calendar, sharing the
+active `groups_schedules.json`.
 
 Add `--debug` to a CLI command to print its execution stages, timings, and a
 compact diagnostic report to stderr. Normal command output and calendar audit
@@ -216,15 +220,25 @@ that rule. Supply both `--load` and `--save` to extend a saved calendar.
 
 ### Group timetable management
 
-Open the unified GUI with `python main.py group-schedule`, select
-**Groups & slots**, and add the School starter template or a blank group.
-Choose active days, the timetable's start/end times, and slot length; assign
-subjects to generated slots and save. Use `--export-config` to export an
-already saved group configuration without opening the GUI:
+Open the dedicated group timetable editor with `python main.py group-schedule`
+(on Windows: `run_calendar.cmd`, then option 5). It manages any number of
+groups: add a group, add one or more schedules per group, choose active days,
+start/end times and slot length, add activities and breaks, apply the edits,
+then save `groups_schedules.json`. Each group keeps its own priority,
+flexibility and override policy, and each schedule references its group.
+
+Export the timetables with the editor's **Export to calendar…** button, which
+merges generated timetable rules into a version-1 calendar while keeping all
+unrelated rules. The same export is available headless on Windows:
 
 ```powershell
 python main.py group-schedule --export-config groups_schedules.json --calendar calendar.json
 ```
+
+From the unified calendar GUI (`python main.py gui`), Files → "Open group
+editor…" opens the same editor beside the calendar using the active
+configuration file; closing the editor reloads the calendar window so exported
+timetables appear on the grid.
 
 ## 07. Configuration and data integrity
 
