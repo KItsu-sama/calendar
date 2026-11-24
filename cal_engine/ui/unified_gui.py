@@ -25,12 +25,13 @@ import tkinter as tk
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
 from typing import Any, Callable
 
 from ..core.models import (
     ActivityRule,
+    ExceptionAction,
     Flexibility,
     Priority,
     Recurrence,
@@ -38,6 +39,7 @@ from ..core.models import (
     TimeConstraints,
     TimeWindow,
 )
+from ..core.operations import conflicts_in_schedule, create_exception
 from ..core.storage import CalendarState
 from ..core.transactional_persistence import CoordinatedStore
 from ..groups.group_schedule import (
@@ -46,10 +48,12 @@ from ..groups.group_schedule import (
     apply_timetables,
     export_to_calendar,
     load_config,
-    save_config,
     validate_config,
 )
+from ..scheduling.change_log import log_change
 from ..scheduling.review import export_commands
+from .commands import HELP as COMMAND_HELP
+from .commands import run_command
 
 # ── Palette ────────────────────────────────────────────────────────────────
 # Text and control colours were measured against WCAG 2.1 AA: body and soft
@@ -67,6 +71,7 @@ CONTROL_EDGE = "#7A86A6"  # borders of inputs and buttons (3.2:1 on panel)
 MARGIN = "#D4505C"        # the red margin line and the "now" line
 TODAY_TINT = "#F1F5FD"
 BREAK_FILL = "#CBD3E3"
+FREE_FILL = "#E4F1E8"       # free time (ink on it is 7:1)
 ERROR = "#B3333F"
 WARN = "#7A4F00"
 
@@ -79,6 +84,73 @@ PRIORITY = {
 }
 PRIORITY_LABELS = [("CRITICAL", "Critical"), ("HIGH", "High"), ("NORMAL", "Normal"), ("LOW", "Low")]
 PRIORITY_LABEL = dict(PRIORITY_LABELS)
+# ── Dark mode palette ───────────────────────────────────────────────────────
+DARK_PAPER = "#2E3548"
+DARK_PANEL = "#1E272E"
+DARK_WHITE = "#575F77"
+DARK_INK = "#FAFBFE"
+DARK_INK_SOFT = "#8892B0"
+DARK_INK_FAINT = "#7D85A2"
+DARK_RULE = "#4A5568"
+DARK_RULE_STRONG = "#5A6B8A"
+DARK_CONTROL_EDGE = "#A0AEC0"
+DARK_MARGIN = "#EF5350"
+DARK_TODAY_TINT = "#31363F"
+DARK_BREAK_FILL = "#4A5568"
+DARK_FREE_FILL = "#2D3748"
+DARK_ERROR = "#FC8181"
+DARK_WARN = "#F6E05E"
+DARK_PRIORITY = {
+    "CRITICAL": ("#FF7875", "#FF5252"),
+    "HIGH": ("#F6C67F", "#E67E22"),
+    "NORMAL": ("#68D391", "#27AE60"),
+    "LOW": ("#8257FA", "#71717A"),
+}
+
+# Global dark mode state
+DARK_MODE = False
+
+
+def _get_palette():
+    """Return the appropriate colour palette dict based on the current mode."""
+    if DARK_MODE:
+        return {
+            "PAPER": DARK_PAPER,
+            "PANEL": DARK_PANEL,
+            "WHITE": DARK_WHITE,
+            "INK": DARK_INK,
+            "INK_SOFT": DARK_INK_SOFT,
+            "INK_FAINT": DARK_INK_FAINT,
+            "RULE": DARK_RULE,
+            "RULE_STRONG": DARK_RULE_STRONG,
+            "CONTROL_EDGE": DARK_CONTROL_EDGE,
+            "MARGIN": DARK_MARGIN,
+            "TODAY_TINT": DARK_TODAY_TINT,
+            "BREAK_FILL": DARK_BREAK_FILL,
+            "FREE_FILL": DARK_FREE_FILL,
+            "ERROR": DARK_ERROR,
+            "WARN": DARK_WARN,
+            "PRIORITY": DARK_PRIORITY,
+        }
+    else:
+        return {
+            "PAPER": PAPER,
+            "PANEL": PANEL,
+            "WHITE": WHITE,
+            "INK": INK,
+            "INK_SOFT": INK_SOFT,
+            "INK_FAINT": INK_FAINT,
+            "RULE": RULE,
+            "RULE_STRONG": RULE_STRONG,
+            "CONTROL_EDGE": CONTROL_EDGE,
+            "MARGIN": MARGIN,
+            "TODAY_TINT": TODAY_TINT,
+            "BREAK_FILL": BREAK_FILL,
+            "FREE_FILL": FREE_FILL,
+            "ERROR": ERROR,
+            "WARN": WARN,
+            "PRIORITY": PRIORITY,
+        }
 
 DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
 DAY_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -317,7 +389,9 @@ class UnifiedCalendarGUI:
         self.config: dict[str, Any] = empty_config()
 
         self.view = tk.StringVar(value="Week")
-        self.show_free = tk.BooleanVar(value=True)
+        self.show_free = tk.BooleanVar(value=True)         # empty timetable slots
+        self.show_free_time = tk.BooleanVar(value=False)   # gaps in the day
+        self.cmd_var = tk.StringVar()
         self.status_var = tk.StringVar(value="")
         self.title_var = tk.StringVar()
         self.anchor = date.today()
@@ -327,7 +401,7 @@ class UnifiedCalendarGUI:
         self.hits: list[tuple] = []
         self.mini_hits: list[tuple] = []
         self.sel_key: tuple | None = None
-        self.draft: tuple[date, int, int] | None = None
+        self.draft: tuple[date, date, int, int] | None = None   # first day, last day, start, end (minutes)
         self.edit_rule_id: str | None = None
         self.slot_ctx: dict[str, Any] | None = None
         self.sl_groups: list[str] = []      # group ids the open slot will belong to
@@ -340,6 +414,15 @@ class UnifiedCalendarGUI:
         self._dragged = False
         self._redraw_job = None
         self._break_rows: list[dict[str, Any]] = []
+        self.fill_ctx: dict[str, Any] | None = None   # a timetable range being filled
+        self.edit_source: date | None = None          # the day of the occurrence open in the event panel
+        self.handle: tuple | None = None              # the fill handle on the selected slot
+        self._fill_drag: dict[str, Any] | None = None
+        self._fill_preview: tuple | None = None
+        self._press_ghost: Block | None = None
+        self._cmd_history: list[str] = []
+        self._cmd_pos = 0
+        self._conflicts: list[dict] = []
         self._member_refs: list[tuple[str, str]] = []
 
         self._make_fonts()
@@ -348,6 +431,7 @@ class UnifiedCalendarGUI:
         self._bind_keys()
         self.view.trace_add("write", lambda *_: self._on_view_change())
         self.show_free.trace_add("write", lambda *_: self._redraw())
+        self.show_free_time.trace_add("write", lambda *_: self._redraw())
         self._load_data()
         if focus == "timetables" and self.config["timetables"]:
             self._open_timetable(self.config["timetables"][0]["id"], focus=False)
@@ -376,51 +460,76 @@ class UnifiedCalendarGUI:
         self.root.option_add("*TCombobox*Listbox.font", self.f_ui)
 
     def _make_styles(self):
+        palette = _get_palette()
         style = ttk.Style(self.root)
         style.theme_use("clam")
-        style.configure(".", background=PANEL, foreground=INK, font=self.f_ui, bordercolor=CONTROL_EDGE, focuscolor=INK)
-        style.configure("TFrame", background=PANEL)
-        style.configure("TLabel", background=PANEL, foreground=INK)
-        style.configure("TEntry", fieldbackground=WHITE, padding=5, bordercolor=CONTROL_EDGE, lightcolor=WHITE, darkcolor=WHITE)
-        style.map("TEntry", bordercolor=[("focus", INK)])
-        style.configure("TCombobox", fieldbackground=WHITE, background=WHITE, padding=5, arrowcolor=INK_SOFT,
-                        bordercolor=CONTROL_EDGE, lightcolor=WHITE, darkcolor=WHITE)
-        style.map("TCombobox", bordercolor=[("focus", INK)], fieldbackground=[("readonly", WHITE)],
-                  selectbackground=[("readonly", WHITE)], selectforeground=[("readonly", INK)])
-        style.configure("TButton", padding=(10, 5), width=0, background=WHITE, bordercolor=CONTROL_EDGE, relief="flat")
-        style.map("TButton", background=[("active", "#E3EAF6")], bordercolor=[("focus", INK)])
-        style.configure("Accent.TButton", background=INK, foreground=WHITE, bordercolor=INK)
+        style.configure(".", background=palette["PANEL"], foreground=palette["INK"], font=self.f_ui,
+                        bordercolor=palette["CONTROL_EDGE"], focuscolor=palette["INK"])
+        style.configure("TFrame", background=palette["PANEL"])
+        style.configure("TLabel", background=palette["PANEL"], foreground=palette["INK"])
+        style.configure("TEntry", fieldbackground=palette["WHITE"], padding=5, bordercolor=palette["CONTROL_EDGE"],
+                        lightcolor=palette["WHITE"], darkcolor=palette["WHITE"])
+        style.map("TEntry", bordercolor=[("focus", palette["INK"])])
+        style.configure("TCombobox", fieldbackground=palette["WHITE"], background=palette["WHITE"], padding=5,
+                        arrowcolor=palette["INK_SOFT"],
+                        bordercolor=palette["CONTROL_EDGE"], lightcolor=palette["WHITE"], darkcolor=palette["WHITE"])
+        style.map("TCombobox", bordercolor=[("focus", palette["INK"])], fieldbackground=[("readonly", palette["WHITE"])],
+                  selectbackground=[("readonly", palette["WHITE"])], selectforeground=[("readonly", palette["INK"])])
+        style.configure("TButton", padding=(10, 5), width=0, background=palette["WHITE"], bordercolor=palette["CONTROL_EDGE"],
+                        relief="flat")
+        style.map("TButton", background=[("active", "#E3EAF6")], bordercolor=[("focus", palette["INK"])])
+        style.configure("Accent.TButton", background=palette["INK"], foreground=palette["WHITE"], bordercolor=palette["INK"])
         style.map("Accent.TButton", background=[("active", "#2D3D69")])
-        style.configure("Danger.TButton", background=WHITE, foreground=ERROR, bordercolor=ERROR)
+        style.configure("Danger.TButton", background=palette["WHITE"], foreground=palette["ERROR"], bordercolor=palette["ERROR"])
         style.map("Danger.TButton", background=[("active", "#F7E4E6")])
-        style.configure("Quiet.TButton", background=PANEL, bordercolor=PANEL, foreground=INK_SOFT)
-        style.map("Quiet.TButton", background=[("active", "#E1E8F4")], foreground=[("active", INK)],
-                  bordercolor=[("focus", INK)])
-        style.configure("Nav.TButton", padding=(9, 5), background=WHITE, bordercolor=CONTROL_EDGE)
-        style.configure("Seg.Toolbutton", padding=(14, 5), width=0, background=WHITE, foreground=INK_SOFT, bordercolor=CONTROL_EDGE)
-        style.map("Seg.Toolbutton", background=[("selected", INK), ("active", "#E3EAF6")],
-                  foreground=[("selected", WHITE)])
-        style.configure("Day.Toolbutton", padding=(4, 4), width=0, background=WHITE, foreground=INK_SOFT, bordercolor=CONTROL_EDGE)
-        style.map("Day.Toolbutton", background=[("selected", INK), ("active", "#E3EAF6")],
-                  foreground=[("selected", WHITE)])
-        style.configure("TCheckbutton", background=PANEL, foreground=INK)
-        style.configure("Vertical.TScrollbar", background=RULE_STRONG, troughcolor=PAPER, bordercolor=PAPER,
-                        arrowcolor=INK_SOFT)
+        style.configure("Quiet.TButton", background=palette["PANEL"], bordercolor=palette["PANEL"], foreground=palette["INK_SOFT"])
+        style.map("Quiet.TButton", background=[("active", "#E1E8F4")], foreground=[("active", palette["INK"])],
+                  bordercolor=[("focus", palette["INK"])])
+        style.configure("Nav.TButton", padding=(9, 5), background=palette["WHITE"], bordercolor=palette["CONTROL_EDGE"])
+        style.configure("Seg.Toolbutton", padding=(14, 5), width=0, background=palette["WHITE"], foreground=palette["INK_SOFT"],
+                        bordercolor=palette["CONTROL_EDGE"])
+        style.map("Seg.Toolbutton", background=[("selected", palette["INK"]), ("active", "#E3EAF6")],
+                  foreground=[("selected", palette["WHITE"])])
+        style.configure("Day.Toolbutton", padding=(4, 4), width=0, background=palette["WHITE"], foreground=palette["INK_SOFT"],
+                        bordercolor=palette["CONTROL_EDGE"])
+        style.map("Day.Toolbutton", background=[("selected", palette["INK"]), ("active", "#E3EAF6")],
+                  foreground=[("selected", palette["WHITE"])])
+        style.configure("TCheckbutton", background=palette["PANEL"], foreground=palette["INK"])
+        style.configure("Vertical.TScrollbar", background=palette["RULE_STRONG"], troughcolor=palette["PAPER"],
+                        bordercolor=palette["PAPER"], arrowcolor=palette["INK_SOFT"])
+
+    def _toggle_dark_mode(self):
+        """Toggle dark mode on/off and rebuild styles."""
+        global DARK_MODE
+        DARK_MODE = not DARK_MODE
+        self._make_styles()
+        # Update key tk widget backgrounds
+        palette = _get_palette()
+        if hasattr(self, 'root') and self.root:
+            self.root.configure(bg=palette["PANEL"])
+        # Update top-level frames that were created in _build
+        try:
+            for child in self.root.winfo_children():
+                if isinstance(child, tk.Frame):
+                    child.configure(bg=palette["PANEL"])
+        except Exception:
+            pass
 
     # ── layout ─────────────────────────────────────────────────────────────
     def _build(self):
+        palette = _get_palette()
         root = self.root
-        root.configure(bg=PANEL)
+        root.configure(bg=palette["PANEL"])
         root.columnconfigure(0, weight=1)
         root.rowconfigure(2, weight=1)
 
         # toolbar
-        bar = tk.Frame(root, bg=PANEL, padx=self.S(14), pady=self.S(10))
+        bar = tk.Frame(root, bg=palette["PANEL"], padx=self.S(14), pady=self.S(10))
         bar.grid(row=0, column=0, sticky="ew")
         ttk.Button(bar, text="‹", style="Nav.TButton", width=2, command=lambda: self._step(-1)).pack(side="left")
         ttk.Button(bar, text="›", style="Nav.TButton", width=2, command=lambda: self._step(1)).pack(side="left", padx=(4, 8))
         ttk.Button(bar, text="Today", style="Nav.TButton", command=self._today).pack(side="left")
-        tk.Label(bar, textvariable=self.title_var, font=self.f_title, bg=PANEL, fg=INK).pack(side="left", padx=self.S(18))
+        tk.Label(bar, textvariable=self.title_var, font=self.f_title, bg=palette["PANEL"], fg=palette["INK"]).pack(side="left", padx=self.S(18))
 
         files = ttk.Menubutton(bar, text="Files")
         menu = tk.Menu(files, tearoff=False, font=self.f_ui)
@@ -431,10 +540,13 @@ class UnifiedCalendarGUI:
         menu.add_command(label="Show calendar as commands…", command=self._show_commands)
         menu.add_command(label="Export timetables to another calendar…", command=self._export_calendar_as)
         menu.add_separator()
+        menu.add_command(label="Dark Mode", command=self._toggle_dark_mode, state="normal")
         menu.add_command(label="Undo last change    Ctrl+Z", command=self._undo_last)
         files["menu"] = menu
         files.pack(side="right")
         ttk.Button(bar, text="New event", style="Accent.TButton", command=self._new_event).pack(side="right", padx=10)
+        self.conflicts_btn = ttk.Button(bar, text="Conflicts", command=self._show_conflicts)
+        self.conflicts_btn.pack(side="right")
         seg = tk.Frame(bar, bg=PANEL)
         seg.pack(side="right", padx=10)
         for label in ("Week", "Month"):
@@ -465,8 +577,21 @@ class UnifiedCalendarGUI:
         self._build_inspector()
 
         tk.Frame(root, bg=RULE_STRONG, height=1).grid(row=3, column=0, sticky="ew")
+        cmd = tk.Frame(root, bg=PANEL, padx=self.S(14), pady=self.S(7))
+        cmd.grid(row=4, column=0, sticky="ew")
+        tk.Label(cmd, text="Command", font=self.f_small, bg=PANEL, fg=INK_SOFT).pack(side="left", padx=(0, 8))
+        self.cmd_entry = ttk.Entry(cmd, textvariable=self.cmd_var, font=self.f_ui)
+        self.cmd_entry.pack(side="left", fill="x", expand=True)
+        ttk.Button(cmd, text="Run", style="Accent.TButton", command=self._run_command).pack(side="left", padx=(8, 0))
+        ttk.Button(cmd, text="?", style="Quiet.TButton", command=self._show_command_help).pack(side="left", padx=(4, 0))
+        self.cmd_entry.bind("<Return>", lambda _e: self._run_command())
+        self.cmd_entry.bind("<Up>", lambda _e: self._history(-1))
+        self.cmd_entry.bind("<Down>", lambda _e: self._history(1))
+        self.cmd_entry.bind("<FocusIn>", lambda _e: self.status_var.set(
+            "Type a command (? for examples). Days like “wed” mean the next one from the date you’re viewing."))
+        tk.Frame(root, bg=RULE_STRONG, height=1).grid(row=5, column=0, sticky="ew")
         foot = tk.Frame(root, bg=PANEL, padx=self.S(14), pady=self.S(5))
-        foot.grid(row=4, column=0, sticky="ew")
+        foot.grid(row=6, column=0, sticky="ew")
         tk.Label(foot, textvariable=self.status_var, font=self.f_small, bg=PANEL, fg=INK_SOFT).pack(side="left")
         self.files_var = tk.StringVar()
         tk.Label(foot, textvariable=self.files_var, font=self.f_small, bg=PANEL, fg=INK_FAINT).pack(side="right")
@@ -489,8 +614,10 @@ class UnifiedCalendarGUI:
         add.pack(side="right")
         self.tt_rows = tk.Frame(side, bg=PANEL)
         self.tt_rows.pack(fill="x", padx=pad, pady=(4, 0))
-        ttk.Checkbutton(side, text="Show free slots on the grid", variable=self.show_free).pack(
+        ttk.Checkbutton(side, text="Show empty timetable slots", variable=self.show_free).pack(
             anchor="w", padx=pad, pady=(8, 0))
+        ttk.Checkbutton(side, text="Show free time", variable=self.show_free_time).pack(
+            anchor="w", padx=pad, pady=(4, 0))
 
         tk.Frame(side, bg=RULE_STRONG, height=1).pack(fill="x", padx=pad, pady=12)
         head = tk.Frame(side, bg=PANEL)
@@ -501,7 +628,7 @@ class UnifiedCalendarGUI:
         self.group_rows.pack(fill="x", padx=pad, pady=(4, 0))
 
         tk.Frame(side, bg=RULE_STRONG, height=1).pack(fill="x", padx=pad, pady=12)
-        legend = tk.Canvas(side, bg=PANEL, highlightthickness=0, width=self.S(204), height=self.S(150))
+        legend = tk.Canvas(side, bg=PANEL, highlightthickness=0, width=self.S(204), height=self.S(172))
         legend.pack(padx=pad, pady=(0, pad), anchor="w")
         y = self.S(4)
         for value, label in PRIORITY_LABELS:
@@ -514,7 +641,10 @@ class UnifiedCalendarGUI:
         legend.create_text(self.S(28), y + self.S(7), text="Break", anchor="w", font=self.f_small, fill=INK_SOFT)
         y += self.S(22)
         legend.create_rectangle(0, y, self.S(18), y + self.S(14), fill=PAPER, outline=CONTROL_EDGE, dash=(3, 2))
-        legend.create_text(self.S(28), y + self.S(7), text="Free timetable slot", anchor="w", font=self.f_small, fill=INK_SOFT)
+        legend.create_text(self.S(28), y + self.S(7), text="Empty timetable slot", anchor="w", font=self.f_small, fill=INK_SOFT)
+        y += self.S(22)
+        legend.create_rectangle(0, y, self.S(18), y + self.S(14), fill=FREE_FILL, outline="")
+        legend.create_text(self.S(28), y + self.S(7), text="Free time", anchor="w", font=self.f_small, fill=INK_SOFT)
 
     def _build_grid(self, parent):
         parent.rowconfigure(1, weight=1)
@@ -581,7 +711,7 @@ class UnifiedCalendarGUI:
         wrap = self.S(276)
         host = self.inspector.body
         self.panels: dict[str, tk.Frame] = {}
-        for name in ("empty", "event", "slot", "timetable", "group"):
+        for name in ("empty", "event", "fill", "slot", "timetable", "group"):
             self.panels[name] = tk.Frame(host, bg=PANEL, padx=pad, pady=pad)
 
         # empty
@@ -607,27 +737,97 @@ class UnifiedCalendarGUI:
         self.ev_name, self.ev_date = tk.StringVar(), tk.StringVar()
         self.ev_start, self.ev_end = tk.StringVar(), tk.StringVar()
         self.ev_repeat, self.ev_priority = tk.StringVar(value="Once"), tk.StringVar(value="NORMAL")
+        self.ev_until, self.ev_reuse_var = tk.StringVar(), tk.StringVar()
+        self.ev_days = {d: tk.BooleanVar() for d in DAYS}
         self.ev_hint, self.ev_warn, self.ev_error = tk.StringVar(), tk.StringVar(), tk.StringVar()
         tk.Label(p, textvariable=self.ev_title, font=self.f_head, bg=PANEL, fg=INK, anchor="w").pack(fill="x", pady=(0, 10))
+        self.ev_reuse = self._field(p, "Reuse an activity you already have", self.ev_reuse_var, values=["–"])
+        self.ev_reuse.bind("<<ComboboxSelected>>", lambda _e: self._reuse_event())
         self.ev_name_entry = self._field(p, "Name", self.ev_name, submit=lambda: self._save_event())
         self._field(p, "Date", self.ev_date, submit=lambda: self._save_event())
         row = self._pair(p)
         self._field(row, "Starts", self.ev_start, side="first", submit=lambda: self._save_event())
         self._field(row, "Ends", self.ev_end, side="last", submit=lambda: self._save_event())
         self._field(p, "Repeats", self.ev_repeat, values=["Once", "Every week", "Every day"])
-        self._message(p, self.ev_hint, INK_FAINT)
+        self.ev_repeat_box = tk.Frame(p, bg=PANEL)
+        self.ev_repeat_box.pack(fill="x")
+        self.ev_days_frame = tk.Frame(self.ev_repeat_box, bg=PANEL)
+        self._label(self.ev_days_frame, "On these days").pack(anchor="w")
+        days = tk.Frame(self.ev_days_frame, bg=PANEL)
+        days.pack(fill="x", pady=(3, 0))
+        for i, d in enumerate(DAYS):
+            ttk.Checkbutton(days, text=DAY_SHORT[i], variable=self.ev_days[d], style="Day.Toolbutton").pack(
+                side="left", padx=(0, 3))
+        self.ev_until_frame = tk.Frame(self.ev_repeat_box, bg=PANEL)
+        self._field(self.ev_until_frame, "Repeat until (optional)", self.ev_until, submit=lambda: self._save_event())
+        self._message(p, self.ev_hint, INK_SOFT)
         self._label(p, "Priority").pack(anchor="w")
         Chips(p, PRIORITY_LABELS, self.ev_priority, self.f_small).pack(anchor="w", pady=(3, 14))
-        self._message(p, self.ev_warn, WARN)
-        self._message(p, self.ev_error, ERROR)
+        self.ev_msgs = tk.Frame(p, bg=PANEL)     # shown only while there is something to say
+        self._message(self.ev_msgs, self.ev_warn, WARN)
+        self._message(self.ev_msgs, self.ev_error, ERROR)
+        self.ev_fill_box = tk.Frame(p, bg=PANEL)
+        self.ev_fill_box.pack(fill="x")
+        self.ev_fill_btn = ttk.Button(self.ev_fill_box, text="Fill timetable slots instead", style="Quiet.TButton",
+                                      command=self._event_to_fill)
         btns = tk.Frame(p, bg=PANEL)
-        btns.pack(fill="x")
+        btns.pack(fill="x", pady=(2, 0))
         ttk.Button(btns, text="Save event", style="Accent.TButton", command=self._save_event).pack(side="left")
         self.ev_delete = ttk.Button(btns, text="Delete", command=self._delete_event)
         self.ev_delete.pack(side="left", padx=6)
         ttk.Button(btns, text="Close", style="Quiet.TButton", command=self._close_panel).pack(side="right")
-        self.ev_repeat.trace_add("write", lambda *_: self._update_hint())
+        # just one day of a repeating event
+        self.ev_occ_box = tk.Frame(p, bg=PANEL)
+        self.ev_occ_box.pack(fill="x")
+        self.ev_occ_frame = tk.Frame(self.ev_occ_box, bg=PANEL)
+        tk.Frame(self.ev_occ_frame, bg=RULE_STRONG, height=1).pack(fill="x", pady=(14, 10))
+        self.ev_occ_title, self.ev_occ_msg = tk.StringVar(), tk.StringVar()
+        self.ev_occ_date, self.ev_occ_start, self.ev_occ_end = tk.StringVar(), tk.StringVar(), tk.StringVar()
+        tk.Label(self.ev_occ_frame, textvariable=self.ev_occ_title, font=self.f_bold, bg=PANEL, fg=INK, anchor="w").pack(
+            fill="x", pady=(0, 2))
+        tk.Label(self.ev_occ_frame, text="Change only this day. The repeating rule stays as it is.", font=self.f_small,
+                 bg=PANEL, fg=INK_SOFT, anchor="w", wraplength=wrap, justify="left").pack(fill="x", pady=(0, 8))
+        self._field(self.ev_occ_frame, "Move to date", self.ev_occ_date, submit=lambda: self._occurrence("apply"))
+        row = self._pair(self.ev_occ_frame)
+        self._field(row, "Starts", self.ev_occ_start, side="first", submit=lambda: self._occurrence("apply"))
+        self._field(row, "Ends", self.ev_occ_end, side="last", submit=lambda: self._occurrence("apply"))
+        self._message(self.ev_occ_frame, self.ev_occ_msg, ERROR)
+        occ_btns = tk.Frame(self.ev_occ_frame, bg=PANEL)
+        occ_btns.pack(fill="x")
+        ttk.Button(occ_btns, text="Change this day", command=lambda: self._occurrence("apply")).pack(side="left")
+        ttk.Button(occ_btns, text="Cancel this day", style="Danger.TButton",
+                   command=lambda: self._occurrence("cancel")).pack(side="left", padx=6)
+        for var in (self.ev_warn, self.ev_error):
+            var.trace_add("write", lambda *_: self._sync_event_messages())
+        self.ev_repeat.trace_add("write", lambda *_: (self._sync_repeat_fields(), self._update_hint()))
         self.ev_date.trace_add("write", lambda *_: self._update_hint())
+        for var in self.ev_days.values():
+            var.trace_add("write", lambda *_: self._update_hint())
+
+        # fill timetable slots (a dragged range over a timetable)
+        p = self.panels["fill"]
+        self.fl_summary, self.fl_error = tk.StringVar(), tk.StringVar()
+        self.fl_name, self.fl_priority = tk.StringVar(), tk.StringVar(value="")
+        self.fl_reuse_var, self.fl_group_var = tk.StringVar(), tk.StringVar(value="No group")
+        self._fill_group_choice: dict[str, str] = {"No group": ""}
+        tk.Label(p, text="Fill timetable slots", font=self.f_head, bg=PANEL, fg=INK, anchor="w").pack(fill="x")
+        tk.Label(p, textvariable=self.fl_summary, font=self.f_small, bg=PANEL, fg=INK_SOFT, anchor="w",
+                 wraplength=wrap, justify="left").pack(fill="x", pady=(2, 12))
+        self.fl_reuse = self._field(p, "Reuse an activity you already have", self.fl_reuse_var, values=["–"])
+        self.fl_reuse.bind("<<ComboboxSelected>>", lambda _e: self._reuse_fill())
+        self.fl_name_entry = self._field(p, "Subject", self.fl_name, submit=lambda: self._save_fill())
+        self._label(p, "Priority").pack(anchor="w")
+        colors = dict(PRIORITY)
+        colors[""] = (WHITE, INK_SOFT)
+        Chips(p, [("", "Default")] + PRIORITY_LABELS, self.fl_priority, self.f_small, colors).pack(anchor="w", pady=(3, 14))
+        self.fl_group = self._field(p, "Group (optional)", self.fl_group_var, values=["No group"])
+        self._message(p, self.fl_error, ERROR)
+        btns = tk.Frame(p, bg=PANEL)
+        btns.pack(fill="x")
+        ttk.Button(btns, text="Fill slots", style="Accent.TButton", command=self._save_fill).pack(side="left")
+        ttk.Button(btns, text="Close", style="Quiet.TButton", command=self._close_panel).pack(side="right")
+        ttk.Button(p, text="Make it an event instead", style="Quiet.TButton", command=self._fill_to_event).pack(
+            anchor="w", pady=(10, 0))
 
         # timetable slot
         p = self.panels["slot"]
@@ -658,6 +858,15 @@ class UnifiedCalendarGUI:
         ttk.Button(add_row, text="Add", style="Quiet.TButton", command=self._slot_add_group).pack(
             side="left", padx=(6, 0))
 
+        self._label(p, "Copy this subject to other days (same slot)").pack(anchor="w")
+        self.sl_copy_days = {d: tk.BooleanVar() for d in DAYS}
+        copy_row = tk.Frame(p, bg=PANEL)
+        copy_row.pack(fill="x", pady=(3, 4))
+        for i, d in enumerate(DAYS):
+            ttk.Checkbutton(copy_row, text=DAY_SHORT[i], variable=self.sl_copy_days[d], style="Day.Toolbutton").pack(
+                side="left", padx=(0, 3))
+        ttk.Button(p, text="Copy to those days", style="Quiet.TButton", command=self._copy_slot_to_days).pack(
+            anchor="w", pady=(0, 10))
         self._message(p, self.sl_warn, WARN)
         self._message(p, self.sl_error, ERROR)
         btns = tk.Frame(p, bg=PANEL)
@@ -756,6 +965,20 @@ class UnifiedCalendarGUI:
         self._refresh_sidebar()
         self._redraw()
 
+    def _sync_event_messages(self):
+        self.ev_msgs.pack_forget()
+        if self.ev_warn.get() or self.ev_error.get():
+            self.ev_msgs.pack(fill="x", before=self.ev_fill_box)
+
+    def _sync_repeat_fields(self):
+        for frame in (self.ev_days_frame, self.ev_until_frame):
+            frame.pack_forget()
+        repeat = self.ev_repeat.get()
+        if repeat == "Every week":
+            self.ev_days_frame.pack(fill="x", pady=(0, 10))
+        if repeat != "Once":
+            self.ev_until_frame.pack(fill="x", pady=(0, 2))
+
     def _update_hint(self):
         try:
             day = parse_date(self.ev_date.get())
@@ -763,21 +986,31 @@ class UnifiedCalendarGUI:
             self.ev_hint.set("")
             return
         repeat = self.ev_repeat.get()
-        self.ev_hint.set({
-            "Once": f"Only on {DAY_LONG[day.weekday()]} {day.day} {month_calendar.month_abbr[day.month]}.",
-            "Every week": f"Every {DAY_LONG[day.weekday()]}.",
+        picked = [DAY_LONG[i] for i, d in enumerate(DAYS) if self.ev_days[d].get()]
+        draft = self.draft
+        multi = bool(draft and draft[0] != draft[1] and not self.edit_rule_id)
+        text = {
+            "Once": (f"One event on each of {(draft[1] - draft[0]).days + 1} days, {DAY_SHORT[draft[0].weekday()]} to "
+                     f"{DAY_SHORT[draft[1].weekday()]}." if multi
+                     else f"Only on {DAY_LONG[day.weekday()]} {day.day} {month_calendar.month_abbr[day.month]}."),
+            "Every week": ("Every " + (", ".join(picked[:-1]) + " and " + picked[-1] if len(picked) > 1 else picked[0]) + "." if picked else "Pick at least one day."),
             "Every day": "Every day.",
-        }.get(repeat, ""))
+        }.get(repeat, "")
+        if repeat != "Once" and not self.edit_rule_id:
+            text += f" Starting {day.day} {month_calendar.month_abbr[day.month]}."
+        self.ev_hint.set(text)
 
     # ── keys ───────────────────────────────────────────────────────────────
     def _bind_keys(self):
         r = self.root
         r.bind("<Control-z>", lambda _e: self._undo_last())
+        r.bind("<Control-d>", lambda _e: self._toggle_dark_mode())
         r.bind("<Control-n>", lambda _e: self._new_event())
         r.bind("<Escape>", self._escape)
+        r.bind("<Control-k>", lambda _e: (self.cmd_entry.focus_set(), "break")[1])
         for key, fn in [("<Left>", lambda: self._step(-1)), ("<Right>", lambda: self._step(1)),
                         ("<Prior>", lambda: self._step(-1)), ("<Next>", lambda: self._step(1)),
-                        ("t", self._today), ("n", self._new_event),
+                        ("t", self._today), ("n", self._new_event), ("slash", self.cmd_entry.focus_set),
                         ("w", lambda: self.view.set("Week")), ("m", lambda: self.view.set("Month")),
                         ("<Delete>", self._delete_selected)]:
             r.bind(key, lambda e, f=fn: None if self._typing(e) else f())
@@ -868,43 +1101,37 @@ class UnifiedCalendarGUI:
             return
         self.status_var.set(f"Exported {count} timetable rules into {Path(name).name}. Its other entries were kept.")
 
-    def _show_commands(self):
-        """The calendar written back out as the commands that would rebuild it."""
-        try:
-            script = export_commands(self.calendar_path)
-        except Exception as exc:
-            messagebox.showerror("Calendar as commands", f"Couldn’t read {self.calendar_path.name}:\n{exc}")
-            return
+    def _text_window(self, title: str, intro: str, text: str):
+        """A read-only, copyable text window."""
         win = tk.Toplevel(self.root)
-        win.title("Calendar as commands")
+        win.title(title)
         win.geometry(f"{self.S(820)}x{self.S(520)}")
         win.configure(bg=PANEL)
         win.transient(self.root)
-        tk.Label(win, text="Run these to rebuild the calendar. Timetable slots are not commands; they live in the "
-                           "timetable file.", font=self.f_small, bg=PANEL, fg=INK_SOFT, anchor="w",
-                 justify="left", wraplength=self.S(780)).pack(fill="x", padx=self.S(14), pady=(self.S(12), 6))
+        tk.Label(win, text=intro, font=self.f_small, bg=PANEL, fg=INK_SOFT, anchor="w", justify="left",
+                 wraplength=self.S(780)).pack(fill="x", padx=self.S(14), pady=(self.S(12), 6))
         frame = tk.Frame(win, bg=PANEL)
         frame.pack(fill="both", expand=True, padx=self.S(14))
-        text = tk.Text(frame, wrap="none", font=tkfont.nametofont("TkFixedFont"), bg=WHITE, fg=INK, relief="flat",
-                       highlightthickness=1, highlightbackground=CONTROL_EDGE, highlightcolor=INK, padx=8, pady=6)
-        bar = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
-        text.configure(yscrollcommand=bar.set)
+        box = tk.Text(frame, wrap="none", font=tkfont.nametofont("TkFixedFont"), bg=WHITE, fg=INK, relief="flat",
+                      highlightthickness=1, highlightbackground=CONTROL_EDGE, highlightcolor=INK, padx=8, pady=6)
+        bar = ttk.Scrollbar(frame, orient="vertical", command=box.yview)
+        box.configure(yscrollcommand=bar.set)
         bar.pack(side="right", fill="y")
-        text.pack(side="left", fill="both", expand=True)
-        text.insert("1.0", script)
-        text.configure(state="disabled")
+        box.pack(side="left", fill="both", expand=True)
+        box.insert("1.0", text)
+        box.configure(state="disabled")
 
         def copy_all():
             self.root.clipboard_clear()
-            self.root.clipboard_append(script)
-            self.status_var.set("Copied the commands to the clipboard.")
+            self.root.clipboard_append(text)
+            self.status_var.set("Copied to the clipboard.")
 
         def save_as():
-            name = filedialog.asksaveasfilename(parent=win, title="Save commands", defaultextension=".txt",
+            name = filedialog.asksaveasfilename(parent=win, title="Save", defaultextension=".txt",
                                                 filetypes=[("Text", "*.txt"), ("PowerShell", "*.ps1"), ("All files", "*.*")])
             if name:
-                Path(name).write_text(script, encoding="utf-8")
-                self.status_var.set(f"Saved the commands to {Path(name).name}.")
+                Path(name).write_text(text, encoding="utf-8")
+                self.status_var.set(f"Saved {Path(name).name}.")
 
         row = tk.Frame(win, bg=PANEL)
         row.pack(fill="x", padx=self.S(14), pady=self.S(10))
@@ -912,7 +1139,118 @@ class UnifiedCalendarGUI:
         ttk.Button(row, text="Save as…", command=save_as).pack(side="left", padx=6)
         ttk.Button(row, text="Close", style="Quiet.TButton", command=win.destroy).pack(side="right")
         win.bind("<Escape>", lambda _e: win.destroy())
-        text.focus_set()
+        box.focus_set()
+        return win
+
+    def _show_commands(self):
+        """The calendar written back out as the commands that would rebuild it."""
+        try:
+            script = export_commands(self.calendar_path)
+        except Exception as exc:
+            messagebox.showerror("Calendar as commands", f"Couldn’t read {self.calendar_path.name}:\n{exc}")
+            return
+        self._text_window("Calendar as commands",
+                          "Run these to rebuild the calendar. Timetable slots are not commands; they live in the "
+                          "timetable file.", script)
+
+    # ── command bar ────────────────────────────────────────────────────────
+    def _show_command_help(self):
+        self._text_window("Commands", "These run exactly as they do on the command line. Days like “wed” mean the "
+                                      "next one from the date you are viewing.", COMMAND_HELP)
+
+    def _history(self, step: int):
+        if not self._cmd_history:
+            return "break"
+        self._cmd_pos = max(0, min(len(self._cmd_history), self._cmd_pos + step))
+        self.cmd_var.set(self._cmd_history[self._cmd_pos] if self._cmd_pos < len(self._cmd_history) else "")
+        self.cmd_entry.icursor(tk.END)
+        return "break"
+
+    def _run_command(self):
+        text = self.cmd_var.get().strip()
+        if not text:
+            return
+        if not self._cmd_history or self._cmd_history[-1] != text:
+            self._cmd_history.append(text)
+        self._cmd_pos = len(self._cmd_history)
+        result = run_command(text, self.state, self.anchor)
+        first = (result.text.splitlines() or [""])[0]
+        if result.changed:
+            new = result.state
+
+            def mutate(_config, state):
+                state.rules, state.exceptions = new.rules, new.exceptions
+
+            try:
+                self._commit(mutate, f"Command: {text}", timetables=False)
+            except Exception as exc:
+                self.status_var.set(f"That command was valid but couldn’t be saved: {exc}")
+                return
+            note = ""
+            try:  # the same change log the command line writes, so a later review sees these too
+                log_change(result.action, activities=[result.activity_id], details=f"gui command: {text}",
+                           log_path=self.calendar_path.with_name("cal_changes.jsonl"))
+            except OSError:
+                note = "  (the change log couldn’t be written)"
+            self.cmd_var.set("")
+            self._close_panel()
+            start, end = self._range()
+            if result.focus and not start <= result.focus <= end:
+                self._set_anchor(result.focus)
+            self._saved(first)
+            self.status_var.set(self.status_var.get() + note)
+            if len(result.text.splitlines()) > 1:
+                self._text_window("Command result", text, result.text)
+        elif result.ok:
+            if "\n" in result.text or len(result.text) > 90:
+                self._text_window("Command result", text, result.text)
+            self.status_var.set(first[:140])
+        else:
+            self.status_var.set(first)
+            if "\n" in result.text:
+                self._text_window("Command result", text, result.text)
+
+    # ── conflicts ──────────────────────────────────────────────────────────
+    def _show_conflicts(self):
+        found = self._conflicts
+        win = tk.Toplevel(self.root)
+        win.title("Conflicts")
+        win.geometry(f"{self.S(640)}x{self.S(380)}")
+        win.configure(bg=PANEL)
+        win.transient(self.root)
+        scope = "this month" if self.view.get() == "Month" else "this week"
+        tk.Label(win, text=(f"{len(found)} overlap{'s' if len(found) != 1 else ''} {scope}. Double-click one to show it."
+                            if found else f"No conflicts {scope}."),
+                 font=self.f_ui, bg=PANEL, fg=INK, anchor="w").pack(fill="x", padx=self.S(14), pady=(self.S(12), 6))
+        frame = tk.Frame(win, bg=PANEL)
+        frame.pack(fill="both", expand=True, padx=self.S(14))
+        box = tk.Listbox(frame, font=self.f_ui, bg=WHITE, fg=INK, relief="flat", highlightthickness=1,
+                         highlightbackground=CONTROL_EDGE, highlightcolor=INK, selectbackground=INK,
+                         selectforeground=WHITE, activestyle="dotbox")
+        bar = ttk.Scrollbar(frame, orient="vertical", command=box.yview)
+        box.configure(yscrollcommand=bar.set)
+        bar.pack(side="right", fill="y")
+        box.pack(side="left", fill="both", expand=True)
+        for item in found:
+            when = datetime.fromisoformat(item["overlap_start"])
+            until = datetime.fromisoformat(item["overlap_end"])
+            box.insert(tk.END, f"{when:%a %d %b  %H:%M}–{until:%H:%M}   {item['left']['name']}  ×  {item['right']['name']}")
+
+        def jump(_event=None):
+            picked = box.curselection()
+            if picked:
+                self._set_anchor(datetime.fromisoformat(found[picked[0]]["overlap_start"]).date())
+
+        box.bind("<Double-Button-1>", jump)
+        box.bind("<Return>", jump)
+        row = tk.Frame(win, bg=PANEL)
+        row.pack(fill="x", padx=self.S(14), pady=self.S(10))
+        ttk.Button(row, text="Show on grid", style="Accent.TButton", command=jump).pack(side="left")
+        ttk.Button(row, text="Close", style="Quiet.TButton", command=win.destroy).pack(side="right")
+        win.bind("<Escape>", lambda _e: win.destroy())
+        box.focus_set()
+        if found:
+            box.selection_set(0)
 
     # ── saving: validate, write both files in one transaction, then swap ───
     def _workspace(self) -> Path:
@@ -1132,14 +1470,25 @@ class UnifiedCalendarGUI:
             self.blocks = self._collect(first, last)
         else:
             self.blocks = self._collect(start, end)
+        try:
+            self._conflicts = conflicts_in_schedule(self.state, start, end)
+        except Exception:
+            self._conflicts = []
+        count = len(self._conflicts)
+        self.conflicts_btn.configure(text=f"Conflicts ({count})" if count else "Conflicts")
+        self._repaint()
+        self._draw_mini()
+
+    def _repaint(self):
+        """Redraw the grid from the blocks already collected (cheap enough to run while dragging)."""
         self.hits = []
+        self.handle = None
         if self.view.get() == "Month":
             self.head.configure(height=self.S(34))
             self._draw_month()
         else:
             self.head.configure(height=self.S(66))
             self._draw_week()
-        self._draw_mini()
 
     def _fit(self, text: str, font: tkfont.Font, width: int) -> str:
         if width <= 0:
@@ -1227,6 +1576,9 @@ class UnifiedCalendarGUI:
             if i:
                 h.create_line(x0, S(8), x0, S(66), fill=RULE)
 
+        if self.show_free_time.get():
+            self._draw_free_time(c, dates, gutter, colw, y_of)
+
         # blocks
         by_day: dict[date, list[Block]] = {d: [] for d in dates}
         for b in self.blocks:
@@ -1245,16 +1597,26 @@ class UnifiedCalendarGUI:
                 bx1 = x0 + pad + inner * (lane + 1) / count - (S(2) if count > 1 else 0)
                 self._draw_block(c, b, bx0, y_of(b.start_min), bx1, max(y_of(b.end_min), y_of(b.start_min) + S(18)))
 
-        # draft
+        # the selection being dragged (like selecting cells in a spreadsheet)
         if self.draft:
-            d, a, z = self.draft
-            if d in by_day:
-                i = dates.index(d)
-                x0 = gutter + i * colw
-                c.create_rectangle(x0 + pad, y_of(a), x0 + colw - pad, y_of(z), fill="#DDE6F6", stipple="gray50",
+            first, last, a, z = self.draft
+            if first in by_day and last in by_day:
+                i0, i1 = dates.index(first), dates.index(last)
+                x0, x1 = gutter + i0 * colw, gutter + (i1 + 1) * colw
+                c.create_rectangle(x0 + pad, y_of(a), x1 - pad, y_of(z), fill="#DDE6F6", stipple="gray50",
                                    outline=INK, dash=(4, 3), width=1)
-                c.create_text(x0 + S(10), y_of(a) + S(4), anchor="nw", font=self.f_block, fill=INK,
-                              text=f"{_clock(a)}–{_clock(z)}")
+                label = f"{_clock(a)}–{_clock(z)}"
+                if i1 > i0:
+                    label = f"{DAY_SHORT[i0]}–{DAY_SHORT[i1]}  {label}"
+                c.create_text(x0 + S(10), y_of(a) + S(4), anchor="nw", font=self.f_block, fill=INK, text=label)
+        # the fill handle's preview: the slots that will receive a copy
+        if self._fill_preview:
+            d0, d1, p0, p1, fill_tt = self._fill_preview
+            slots = {e["period"]: e for e in self._layout_slots(fill_tt)}
+            if p0 in slots and p1 in slots:
+                c.create_rectangle(gutter + d0 * colw + pad, y_of(slots[p0]["start"]),
+                                   gutter + (d1 + 1) * colw - pad, y_of(slots[p1]["end"]),
+                                   outline=INK, width=2, dash=(5, 3))
 
         # now
         if today in by_day:
@@ -1311,6 +1673,10 @@ class UnifiedCalendarGUI:
                     detail = f"{PRIORITY_LABEL.get(b.priority, b.priority)}  {detail}"
                 c.create_text(x0 + S(10), y0 + S(19), anchor="nw", font=self.f_small, fill=INK_SOFT,
                               text=self._fit(detail, self.f_small, room))
+            if selected and b.kind == "slot" and b.tt is not None:
+                size = S(9)   # drag this corner across days or periods to copy the slot, like a spreadsheet
+                c.create_rectangle(x1 - size - 1, y1 - size - 1, x1 - 1, y1 - 1, fill=INK, outline=WHITE)
+                self.handle = (x1 - size - 3, y1 - size - 3, x1 + 1, y1 + 1, b)
             if y1 - y0 >= S(54) and b.act and b.act.get("group_ids"):
                 names = ", ".join(self._group_name(g) for g in b.act["group_ids"])
                 c.create_text(x0 + S(10), y0 + S(34), anchor="nw", font=self.f_small, fill=INK_SOFT,
@@ -1441,8 +1807,17 @@ class UnifiedCalendarGUI:
 
     def _on_press(self, event):
         self.body.focus_set()
-        self._press, self._dragged = None, False
+        self._press, self._dragged, self._press_ghost, self._fill_drag = None, False, None, None
+        x, y = self.body.canvasx(event.x), self.body.canvasy(event.y)
+        if self.handle and self.handle[0] <= x <= self.handle[2] and self.handle[1] <= y <= self.handle[3]:
+            self._fill_drag = {"block": self.handle[4], "range": None}
+            return
         target = self._hit(event)
+        if isinstance(target, Block) and target.kind == "ghost" and self.view.get() == "Week":
+            point = self._grid_point(event)       # an empty timetable cell: click opens it, drag fills a range
+            if point:
+                self._press, self._press_ghost = point, target
+                return
         if isinstance(target, Block):
             self._select_block(target)
             return
@@ -1457,24 +1832,121 @@ class UnifiedCalendarGUI:
                 self._press = point
 
     def _on_drag(self, event):
+        if self._fill_drag:
+            self._fill_motion(event)
+            return
         if not self._press:
             return
         point = self._grid_point(event)
         if not point or point == self._press:
             return
         self._dragged = True
-        day = week_start(self.anchor) + timedelta(days=self._press[0])
+        base = week_start(self.anchor)
+        first, last = sorted((base + timedelta(days=self._press[0]), base + timedelta(days=point[0])))
         a, z = sorted((self._press[1], point[1]))
-        self.draft = (day, a, max(z, a + SNAP))
-        self._redraw()
+        z = max(z, a + SNAP)
+        if self._press_ghost is not None and self._press_ghost.tt is not None:
+            a, z = self._snap_cells(self._press_ghost.tt, a, z)     # whole timetable cells, like a spreadsheet
+        self.draft = (first, last, a, z)
+        self._repaint()
 
     def _on_release(self, event):
-        if self._press and self._dragged and self.draft:
-            day, a, z = self.draft
-            self._open_new_event(day, a, z)
+        if self._fill_drag:
+            self._fill_finish()
+        elif self._press and self._dragged and self.draft:
+            first, last, a, z = self.draft
+            if self._press_ghost is not None and self._press_ghost.tt is not None:
+                self._open_fill(self._press_ghost.tt["id"], first, last, a, z)
+            else:
+                self._open_new_event(first, a, z, last)
         elif self._press and not self._dragged:
-            self._close_panel()
-        self._press, self._dragged = None, False
+            if self._press_ghost is not None:
+                self._select_block(self._press_ghost)
+            else:
+                self._close_panel()
+        self._press, self._dragged, self._press_ghost = None, False, None
+
+    # ── timetable cells (what a range drag and the fill handle work on) ────
+    def _layout_slots(self, tt: dict[str, Any]) -> list[dict[str, Any]]:
+        try:
+            return [e for e in slot_layout(tt) if e["kind"] == "slot"]
+        except (KeyError, ValueError):
+            return []
+
+    def _snap_cells(self, tt: dict[str, Any], a: int, z: int) -> tuple[int, int]:
+        hit = [e for e in self._layout_slots(tt) if e["start"] < z and e["end"] > a]
+        return (min(e["start"] for e in hit), max(e["end"] for e in hit)) if hit else (a, z)
+
+    def _slot_at(self, tt: dict[str, Any], minute: int) -> dict[str, Any] | None:
+        slots = self._layout_slots(tt)
+        if not slots:
+            return None
+        inside = next((e for e in slots if e["start"] <= minute < e["end"]), None)
+        return inside or min(slots, key=lambda e: min(abs(minute - e["start"]), abs(minute - e["end"])))
+
+    def _cells_in(self, tt: dict[str, Any], first: date, last: date, a: int, z: int) -> list[tuple[str, int]]:
+        """The (day, period) cells of a timetable inside a dragged rectangle."""
+        periods = [e["period"] for e in self._layout_slots(tt) if e["start"] < z and e["end"] > a]
+        days, day = [], first
+        while day <= last:
+            if DAYS[day.weekday()] in tt.get("days", []):
+                days.append(DAYS[day.weekday()])
+            day += timedelta(days=1)
+        return [(d, p) for d in days for p in periods]
+
+    def _fill_motion(self, event):
+        drag = self._fill_drag
+        block = drag["block"]
+        point = self._grid_point(event)
+        slot = self._slot_at(block.tt, point[1]) if point else None
+        if not point or slot is None:
+            return
+        d0, d1 = sorted((block.start.weekday(), point[0]))
+        p0, p1 = sorted((block.period, slot["period"]))
+        drag["range"] = (d0, d1, p0, p1)
+        self._fill_preview = (d0, d1, p0, p1, block.tt)
+        self._repaint()
+
+    def _fill_finish(self):
+        drag, self._fill_drag, self._fill_preview = self._fill_drag, None, None
+        block = drag["block"]
+        if not drag["range"] or block.act is None or block.tt is None:
+            self._repaint()
+            return
+        d0, d1, p0, p1 = drag["range"]
+        tt = block.tt
+        periods = {e["period"] for e in self._layout_slots(tt)}
+        cells = [(DAYS[d], p) for d in range(d0, d1 + 1) if DAYS[d] in tt.get("days", [])
+                 for p in range(p0, p1 + 1) if p in periods and (d, p) != (block.start.weekday(), block.period)]
+        if not cells:
+            self._repaint()
+            return
+        self._apply_fill(tt["id"], cells, block.act["name"], block.act.get("priority", ""),
+                         list(block.act.get("group_ids", [])))
+
+    def _draw_free_time(self, c: tk.Canvas, dates: list[date], gutter: float, colw: float, y_of):
+        """Shade the gaps between entries, and say how long each is."""
+        S = self.S
+        resolver = self.state.resolver()
+        schedule = resolver.build_actual_schedule(dates[0], dates[-1])
+        lo = datetime.combine(dates[0], datetime.min.time())
+        gaps = resolver.calculate_free_time(schedule, lo, lo + timedelta(days=7))
+        for i, day in enumerate(dates):
+            midnight = datetime.combine(day, datetime.min.time())
+            for gap in gaps:
+                a = max(gap.start, midnight)
+                z = min(gap.end, midnight + timedelta(days=1))
+                s_min = max((a - midnight).total_seconds() / 60, self.hour_range[0] * 60)
+                e_min = min((z - midnight).total_seconds() / 60, self.hour_range[1] * 60)
+                if e_min - s_min < 15:
+                    continue
+                x0 = gutter + i * colw
+                c.create_rectangle(x0 + S(3), y_of(s_min), x0 + colw - S(3), y_of(e_min), fill=FREE_FILL, outline="")
+                if y_of(e_min) - y_of(s_min) >= S(24):
+                    hours, minutes = divmod(int(e_min - s_min), 60)
+                    label = "Free " + (f"{hours}h " if hours else "") + (f"{minutes}m" if minutes else "")
+                    c.create_text(x0 + S(10), y_of(s_min) + S(4), anchor="nw", text=label.strip(),
+                                  font=self.f_small, fill=INK_SOFT)
 
     def _on_double(self, event):
         target = self._hit(event)
@@ -1535,6 +2007,9 @@ class UnifiedCalendarGUI:
         self.slot_ctx = None
         self.tt_id = None
         self.group_sel = None
+        self.fill_ctx = None
+        self.edit_source = None
+        self._range_ctx = None
 
     def _select_block(self, b: Block, focus: bool = True):
         self.sel_key = b.key
@@ -1576,20 +2051,81 @@ class UnifiedCalendarGUI:
         a = (now.hour + 1) * 60 if day == date.today() and now.hour < 22 else 9 * 60
         self._open_new_event(day, a, a + 60)
 
-    def _open_new_event(self, day: date, a: int, z: int):
+    def _known_activities(self) -> dict[str, dict[str, Any]]:
+        """Every activity name already in use (events and timetable slots), for the reuse pickers."""
+        known: dict[str, dict[str, Any]] = {}
+        for rule in self.state.rules:
+            if not rule.id.startswith((GROUP_PREFIX, LEGACY_PREFIX)):
+                known.setdefault(rule.name, {"priority": rule.priority.value, "groups": []})
+        for tt in self.config["timetables"]:
+            for act in tt.get("activities", []):
+                known.setdefault(act["name"], {"priority": act.get("priority", ""), "groups": list(act.get("group_ids", []))})
+        return dict(sorted(known.items(), key=lambda kv: kv[0].casefold()))
+
+    def _fill_reuse_lists(self):
+        names = list(self._known_activities()) or ["–"]
+        self.ev_reuse["values"] = names
+        self.fl_reuse["values"] = names
+        self.ev_reuse_var.set("")
+        self.fl_reuse_var.set("")
+
+    def _reuse_event(self):
+        info = self._known_activities().get(self.ev_reuse_var.get())
+        if info:
+            self.ev_name.set(self.ev_reuse_var.get())
+            if info["priority"]:
+                self.ev_priority.set(info["priority"])
+
+    def _reuse_fill(self):
+        name = self.fl_reuse_var.get()
+        info = self._known_activities().get(name)
+        if not info:
+            return
+        self.fl_name.set(name)
+        self.fl_priority.set(info["priority"])
+        label = next((k for k, v in self._fill_group_choice.items() if v and v in info["groups"]), "No group")
+        self.fl_group_var.set(label)
+
+    def _best_timetable_cells(self, first: date, last: date, a: int, z: int) -> tuple[dict | None, list[tuple[str, int]]]:
+        best: tuple[dict | None, list[tuple[str, int]]] = (None, [])
+        for tt in self.config["timetables"]:
+            cells = self._cells_in(tt, first, last, a, z)
+            if len(cells) > len(best[1]):
+                best = (tt, cells)
+        return best
+
+    def _open_new_event(self, day: date, a: int, z: int, last: date | None = None):
+        last = last or day
         self._reset_context()
-        self.draft = (day, a, z)
+        self.draft = (day, last, a, z)
+        self._range_ctx = (day, last, a, z)
         self.sel_key = None
+        multi = last != day
         self.ev_title.set("New event")
         self.ev_name.set("")
         self.ev_date.set(day.isoformat())
         self.ev_start.set(_clock(a))
         self.ev_end.set(_clock(z))
-        self.ev_repeat.set("Once")
         self.ev_priority.set("NORMAL")
+        self.ev_until.set("")
+        picked, cursor = set(), day
+        while cursor <= last:
+            picked.add(DAYS[cursor.weekday()])
+            cursor += timedelta(days=1)
+        for d in DAYS:
+            self.ev_days[d].set(d in picked)
+        self.ev_repeat.set("Every week" if multi else "Once")
+        self._sync_repeat_fields()
         self.ev_warn.set("")
         self.ev_error.set("")
         self.ev_delete.state(["disabled"])
+        self.ev_occ_frame.pack_forget()
+        self._fill_reuse_lists()
+        tt, cells = self._best_timetable_cells(day, last, a, z)
+        self.ev_fill_btn.pack_forget()
+        if tt and cells:
+            self.ev_fill_btn.configure(text=f"Fill {len(cells)} slot{'s' if len(cells) != 1 else ''} of {tt['name']} instead")
+            self.ev_fill_btn.pack(anchor="w", pady=(0, 8))
         self._update_hint()
         self._show_panel("event")
         self.ev_name_entry.focus_set()
@@ -1600,24 +2136,141 @@ class UnifiedCalendarGUI:
         rule = b.rule
         self._reset_context()
         self.edit_rule_id = rule.id
+        self.edit_source = b.start.date()
         self.ev_title.set("Edit event")
         self.ev_name.set(rule.name)
         self.ev_date.set(b.start.date().isoformat())
         self.ev_start.set(_clock(b.start_min))
         self.ev_end.set(_clock(b.end_min))
         kind = rule.recurrence.type
-        self.ev_repeat.set("Once" if kind == RecurrenceType.NONE else "Every day" if kind == RecurrenceType.DAILY else "Every week")
         self.ev_priority.set(rule.priority.value)
+        listed = set(rule.recurrence.days_of_week) or {DAYS[b.start.weekday()]}
+        for d in DAYS:
+            self.ev_days[d].set(d in listed)
+        self.ev_until.set(rule.recurrence.valid_until or "")
+        self.ev_repeat.set("Once" if kind == RecurrenceType.NONE else "Every day" if kind == RecurrenceType.DAILY else "Every week")
+        self._sync_repeat_fields()
         self.ev_warn.set("")
         self.ev_error.set("")
         self.ev_delete.state(["!disabled"])
+        self._fill_reuse_lists()
+        self.ev_fill_btn.pack_forget()
         self._update_hint()
         if kind != RecurrenceType.NONE:
-            self.ev_hint.set(self.ev_hint.get() + " Changes apply to every occurrence.")
+            self.ev_hint.set(self.ev_hint.get() + " Changes here apply to every occurrence; to change only this day, use “Just this day” below.")
+            self.ev_occ_title.set(f"Just {DAY_SHORT[b.start.weekday()]} {b.start.day} {month_calendar.month_abbr[b.start.month]}")
+            self.ev_occ_date.set(b.start.date().isoformat())
+            self.ev_occ_start.set(_clock(b.start_min))
+            self.ev_occ_end.set(_clock(b.end_min))
+            self.ev_occ_msg.set("")
+            self.ev_occ_frame.pack(fill="x")
+        else:
+            self.ev_occ_frame.pack_forget()
         self._show_panel("event")
         if focus:
             self.ev_name_entry.focus_set()
         self._refresh_sidebar()
+
+    # ── ranges: from an event to timetable slots and back ──────────────────
+    def _event_to_fill(self):
+        if not self._range_ctx:
+            return
+        first, last, a, z = self._range_ctx
+        tt, cells = self._best_timetable_cells(first, last, a, z)
+        if tt and cells:
+            self._open_fill(tt["id"], first, last, a, z)
+
+    def _fill_to_event(self):
+        if self.fill_ctx:
+            first, last, a, z = self.fill_ctx["range"]
+            self._open_new_event(first, a, z, last)
+
+    def _open_fill(self, tid: str, first: date, last: date, a: int, z: int):
+        tt = self._tt(tid)
+        cells = self._cells_in(tt, first, last, a, z) if tt else []
+        if not cells:
+            self._open_new_event(first, a, z, last)
+            return
+        self._reset_context()
+        self.sel_key = None
+        self.draft = (first, last, a, z)
+        self.fill_ctx = {"tid": tid, "cells": cells, "range": (first, last, a, z)}
+        days = sorted({d for d, _ in cells}, key=DAYS.index)
+        periods = sorted({p for _, p in cells})
+        taken = {(x.get("day"), int(x.get("period", 0))) for x in tt.get("activities", [])}
+        replaced = sum(1 for cell in cells if cell in taken)
+        where = f"{DAY_SHORT[DAYS.index(days[0])]}" + (f" to {DAY_SHORT[DAYS.index(days[-1])]}" if len(days) > 1 else "")
+        slots = f"slot {periods[0]}" + (f" to {periods[-1]}" if len(periods) > 1 else "")
+        note = f" {replaced} already {'has a subject and will be replaced' if replaced == 1 else 'have subjects and will be replaced'}." if replaced else ""
+        self.fl_summary.set(f"{tt['name']}: {where}, {slots}. That is {len(cells)} slot{'s' if len(cells) != 1 else ''}.{note}")
+        self.fl_name.set("")
+        self.fl_priority.set("")
+        self.fl_error.set("")
+        self._fill_group_choice = {"No group": ""}
+        self._fill_group_choice.update({f"{g['name']}  ({g['id']})": g["id"] for g in self.config["groups"]})
+        self.fl_group["values"] = list(self._fill_group_choice)
+        self.fl_group_var.set("No group")
+        self._fill_reuse_lists()
+        self._show_panel("fill")
+        self.fl_name_entry.focus_set()
+        self._refresh_sidebar()
+        self._redraw()
+
+    def _save_fill(self):
+        ctx = self.fill_ctx
+        if not ctx:
+            return
+        name = self.fl_name.get().strip()
+        if not name:
+            self.fl_error.set("Give the slots a subject.")
+            return
+        gid = self._fill_group_choice.get(self.fl_group_var.get(), "")
+        error = self._apply_fill(ctx["tid"], ctx["cells"], name, self.fl_priority.get(), [gid] if gid else [])
+        if error:
+            self.fl_error.set(error)
+
+    def _apply_fill(self, tid: str, cells: list[tuple[str, int]], name: str, priority: str, groups: list[str]) -> str:
+        """Write one subject into many timetable cells in a single undoable change. Returns "" or a message."""
+        def mutate(config, _state):
+            tt = self._tt(tid, config)
+            if tt is None:
+                raise ValueError("That timetable no longer exists.")
+            layout = {e["period"]: e for e in self._layout_slots(tt)}
+            activities = tt.setdefault("activities", [])
+            made = replaced = 0
+            for day, period in cells:
+                slot = layout.get(period)
+                if slot is None:
+                    continue
+                act = next((a for a in activities if a.get("day") == day and int(a.get("period", 0)) == period), None)
+                if act is None:
+                    taken = {a["id"] for a in activities}
+                    new_id, n = f"{day.lower()}_p{period}", 2
+                    while new_id in taken:
+                        new_id, n = f"{day.lower()}_p{period}_{n}", n + 1
+                    act = {"id": new_id, "day": day, "period": period}
+                    activities.append(act)
+                    made += 1
+                else:
+                    replaced += 1
+                act.update({"name": name, "start_time": _clock(slot["start"]), "end_time": _clock(slot["end"]),
+                            "group_ids": list(groups)})
+                if priority:
+                    act["priority"] = priority
+                else:
+                    act.pop("priority", None)
+            return made, replaced
+
+        try:
+            made, replaced = self._commit(mutate, f"Filled slots with {name}")
+        except Exception as exc:
+            self.status_var.set(f"Couldn’t fill the slots: {exc}")
+            return str(exc)
+        self._close_panel()
+        tail = f" ({replaced} replaced)" if replaced else ""
+        self.status_var.set(f"Filled {made + replaced} slot{'s' if made + replaced != 1 else ''} with {name}{tail}"
+                            f"  ·  saved {datetime.now():%H:%M}  ·  Ctrl+Z to undo")
+        return ""
 
     def _open_slot(self, b: Block, focus: bool = True):
         tt = b.tt
@@ -1639,6 +2292,8 @@ class UnifiedCalendarGUI:
         self.sl_error.set("")
         self.sl_clear.state(["!disabled"] if act else ["disabled"])
         self.sl_groups = list(act.get("group_ids", []))
+        for d in DAYS:
+            self.sl_copy_days[d].set(False)
         self._refresh_slot_groups()
         self._show_panel("slot")
         if focus:
@@ -1697,49 +2352,107 @@ class UnifiedCalendarGUI:
                 raise ValueError("The event has to end after it starts.")
             start, end = _clock(s), _clock(e)
             repeat = self.ev_repeat.get()
-            if repeat == "Once":
-                recurrence = Recurrence(type=RecurrenceType.NONE)
-                constraints = TimeConstraints(fixed_interval=TimeWindow(start, end), date=target.isoformat())
-            elif repeat == "Every day":
-                recurrence = Recurrence(type=RecurrenceType.DAILY)
-                constraints = TimeConstraints(fixed_interval=TimeWindow(start, end))
-            else:
-                recurrence = Recurrence(type=RecurrenceType.WEEKLY, days_of_week=[DAYS[target.weekday()]])
-                constraints = TimeConstraints(fixed_interval=TimeWindow(start, end))
+            days = [d for d in DAYS if self.ev_days[d].get()]
+            if repeat == "Every week" and not days:
+                raise ValueError("Pick at least one day for the weekly repeat.")
+            until = parse_date(self.ev_until.get()).isoformat() if repeat != "Once" and self.ev_until.get().strip() else None
+            if until and date.fromisoformat(until) < target:
+                raise ValueError("“Repeat until” has to be on or after the start date.")
             priority = Priority(self.ev_priority.get())
             edit_id = self.edit_rule_id
+            draft = self.draft
+            dates = [target]
+            if repeat == "Once" and not edit_id and draft and draft[0] != draft[1]:
+                dates = [draft[0] + timedelta(days=i) for i in range((draft[1] - draft[0]).days + 1)]
 
             def mutate(_config, state):
                 existing = next((r for r in state.rules if r.id == edit_id), None) if edit_id else None
                 if existing and existing.id.startswith((GROUP_PREFIX, LEGACY_PREFIX)):
                     raise ValueError("This belongs to a timetable. Edit it from its slot.")
+                if existing and existing.time_constraints.day_time_windows:
+                    raise ValueError("This rule has different times on different days. "
+                                     f"Change it from the command bar: change {existing.id} --time HH:MM-HH:MM")
+                old = existing.recurrence if existing else None
+                if repeat == "Once":
+                    recurrence = Recurrence(type=RecurrenceType.NONE)
+                elif repeat == "Every day":
+                    recurrence = Recurrence(type=RecurrenceType.DAILY, except_days=list(old.except_days) if old else [],
+                                            valid_from=(old.valid_from if old else None) or target.isoformat(),
+                                            valid_until=until)
+                else:
+                    recurrence = Recurrence(type=RecurrenceType.WEEKLY, days_of_week=days,
+                                            except_days=list(old.except_days) if old else [],
+                                            valid_from=(old.valid_from if old else None) or target.isoformat(),
+                                            valid_until=until)
                 if existing:
+                    constraints = copy.deepcopy(existing.time_constraints)
+                    constraints.fixed_interval = TimeWindow(start, end)
+                    constraints.date = target.isoformat() if repeat == "Once" else None
                     existing.name, existing.priority = name, priority
                     existing.recurrence, existing.time_constraints = recurrence, constraints
-                    return existing.id
+                    return [existing.id]
                 prefix = {"Once": "custom__", "Every day": "custom_daily__"}.get(repeat, "custom_weekly__")
-                stamp, n = target.isoformat().replace("-", ""), 1
-                taken = {r.id for r in state.rules}
-                while f"{prefix}{stamp}__{n}" in taken:
-                    n += 1
-                rule_id = f"{prefix}{stamp}__{n}"
-                state.rules.append(ActivityRule(
-                    id=rule_id, name=name, flexibility=Flexibility.FIXED, priority=priority,
-                    recurrence=recurrence, time_constraints=constraints))
-                return rule_id
+                made, taken = [], {r.id for r in state.rules}
+                for when in dates:
+                    stamp, n = when.isoformat().replace("-", ""), 1
+                    while f"{prefix}{stamp}__{n}" in taken:
+                        n += 1
+                    rule_id = f"{prefix}{stamp}__{n}"
+                    taken.add(rule_id)
+                    constraints = TimeConstraints(fixed_interval=TimeWindow(start, end),
+                                                  date=when.isoformat() if repeat == "Once" else None)
+                    state.rules.append(ActivityRule(
+                        id=rule_id, name=name, flexibility=Flexibility.FIXED, priority=priority,
+                        recurrence=recurrence, time_constraints=constraints))
+                    made.append(rule_id)
+                return made
 
-            rule_id = self._commit(mutate, f"Saved {name}", timetables=False)
+            made = self._commit(mutate, f"Saved {name}", timetables=False)
         except Exception as exc:
             self.ev_error.set(str(exc))
             return
-        self.edit_rule_id = rule_id
+        self.edit_rule_id = made[0]
+        self.edit_source = target
         self.draft = None
         self.ev_title.set("Edit event")
         self.ev_error.set("")
         self.ev_delete.state(["!disabled"])
+        self.ev_fill_btn.pack_forget()
         self._set_anchor(target)
-        self.ev_warn.set(self._overlap_note(target, s, e, rule_id))
-        self._saved(f"Saved “{name}”")
+        self.ev_warn.set(self._overlap_note(target, s, e, made[0]))
+        extra = f" on {len(made)} days" if len(made) > 1 else ""
+        self._saved(f"Saved “{name}”{extra}")
+
+    def _occurrence(self, mode: str):
+        """Cancel, move or retime a single day of a repeating event (the rule itself is untouched)."""
+        rule_id, source = self.edit_rule_id, self.edit_source
+        if not rule_id or source is None:
+            return
+        try:
+            if mode == "cancel":
+                action, new_date, window = ExceptionAction.CANCEL, None, None
+            else:
+                new_date = parse_date(self.ev_occ_date.get())
+                s, e = parse_time(self.ev_occ_start.get()), parse_time(self.ev_occ_end.get())
+                if s >= e:
+                    raise ValueError("The day has to end after it starts.")
+                window = TimeWindow(_clock(s), _clock(e))
+                action = ExceptionAction.MOVE if new_date != source else ExceptionAction.MODIFY
+
+            def mutate(_config, state):
+                result = create_exception(state, rule_id, action, source, new_date, window)
+                if result.status == "REQUIRES_AI":
+                    clash = ", ".join(c.name for c in result.conflicts[:3]) or "something else"
+                    raise ValueError(f"That clashes with {clash} and needs a judgment call, so nothing was changed.")
+                state.rules, state.exceptions = result.state.rules, result.state.exceptions
+
+            self._commit(mutate, f"{'Cancelled' if mode == 'cancel' else 'Changed'} {source.isoformat()}", timetables=False)
+        except Exception as exc:
+            self.ev_occ_msg.set(str(exc))
+            return
+        self._close_panel()
+        day = f"{DAY_SHORT[source.weekday()]} {source.day} {month_calendar.month_abbr[source.month]}"
+        self._saved(f"Cancelled {day}" if mode == "cancel" else f"Changed {day}")
 
     def _delete_event(self):
         rule_id = self.edit_rule_id
@@ -1813,6 +2526,25 @@ class UnifiedCalendarGUI:
         self.sl_warn.set(self._overlap_note(ctx["date"], s, e, f"{GROUP_PREFIX}{tid}__{aid}"))
         self._redraw()
         self._saved(f"Saved {name} on {DAY_SHORT[DAYS.index(day)]}")
+
+    def _copy_slot_to_days(self):
+        """Keyboard-friendly twin of dragging the fill handle sideways."""
+        ctx = self.slot_ctx
+        if not ctx:
+            return
+        tt = self._tt(ctx["tid"])
+        name = self.sl_name.get().strip()
+        days = [d for d in DAYS if self.sl_copy_days[d].get() and d != ctx["day"] and d in (tt or {}).get("days", [])]
+        if not name:
+            self.sl_error.set("Give the slot a subject first.")
+            return
+        if not days:
+            self.sl_error.set("Tick at least one other active day to copy to.")
+            return
+        error = self._apply_fill(ctx["tid"], [(d, ctx["period"]) for d in days], name, self.sl_priority.get(),
+                                 list(self.sl_groups))
+        if error:
+            self.sl_error.set(error)
 
     def _clear_slot(self):
         ctx = self.slot_ctx
@@ -2220,310 +2952,4 @@ def main(focus: str | None = None):
 
 
 if __name__ == "__main__":
-    main_group_schedule()
-
-def main_group_schedule() -> None:
-    """Entry point for the group schedule editor."""
-    import tkinter as tk
-    from tkinter import messagebox
-    root = tk.Tk()
-    GroupScheduleEditor(root)
-    root.mainloop()
-
-# GroupScheduleEditor moved from cal_engine/groups/group_schedule_gui.py
-# ---------------------------------------------------------------------------
-
-class GroupScheduleEditor:
-    """Tkinter editor for reusable groups and timetables.
-
-    Groups are organizational metadata only (id, name, description); they never
-    carry scheduling policy. Timetables hold the scheduling rules (days, times,
-    slot length, place tag, slots/activities and breaks).
-    """
-
-    def __init__(self, root: tk.Tk, config_path: str | Path | None = None):
-        from ..groups.group_schedule import export_to_calendar, load_config, save_config
-
-        self.root = root
-        root.title("cal — Group & Timetable Editor")
-        root.geometry("1120x760")
-
-        self.config: dict[str, Any] = {
-            "version": 2,
-            "groups": [],
-            "timetables": [],
-        }
-
-        self.config_path = (
-            Path(config_path) if config_path else Path("groups_schedules.json")
-        )
-        self.status_var = tk.StringVar()
-        self._build()
-
-        if self.config_path.is_file():
-            try:
-                self.config = load_config(self.config_path)
-                self._status(f"Loaded {self.config_path}")
-            except (ValueError, OSError) as exc:
-                messagebox.showerror("Configuration load failed", str(exc))
-                self._status("Configuration could not be loaded.")
-        else:
-            self._status(
-                "No configuration loaded. Open an existing file or create "
-                "a group and timetable, then save."
-            )
-
-        self._populate_groups()
-        self._populate_timetables()
-        self._populate_activities()
-        self._load_group_fields()
-        self._load_timetable_fields()
-
-    def _build(self) -> None:
-        top = ttk.Frame(self.root, padding=10)
-        top.pack(fill="x")
-        ttk.Label(top, text="Configuration file").pack(side="left")
-        self.path_var = tk.StringVar(value=str(self.config_path))
-        ttk.Entry(top, textvariable=self.path_var, width=55).pack(
-            side="left", padx=6
-        )
-        ttk.Button(top, text="Open…", command=self.open_config).pack(side="left")
-        ttk.Button(top, text="Load", command=self.load).pack(side="left", padx=4)
-        ttk.Button(top, text="Save configuration", command=self.save).pack(
-            side="left"
-        )
-
-        pane = ttk.Panedwindow(self.root, orient="horizontal")
-        pane.pack(fill="both", expand=True, padx=10, pady=4)
-        left = ttk.Frame(pane, padding=8)
-        right = ttk.Frame(pane, padding=8)
-        pane.add(left, weight=1)
-        pane.add(right, weight=4)
-        ttk.Label(left, text="Groups").pack(anchor="w")
-        self.group_list = tk.Listbox(left, height=7, exportselection=False)
-        self.group_list.pack(fill="x", pady=4)
-        self.group_list.bind(
-            "<<ListboxSelect>>", lambda _e: self._load_group_fields()
-        )
-        ttk.Button(left, text="Add group", command=self.add_group).pack(
-            fill="x", pady=2
-        )
-        ttk.Button(left, text="Apply group edits", command=self.apply_group).pack(
-            fill="x", pady=2
-        )
-        ttk.Separator(left).pack(fill="x", pady=10)
-        ttk.Label(left, text="Timetables").pack(anchor="w")
-        self.timetable_list = tk.Listbox(left, height=8, exportselection=False)
-        self.timetable_list.pack(fill="x", pady=4)
-        self.timetable_list.bind(
-            "<<ListboxSelect>>", lambda _e: self._load_timetable_fields()
-        )
-        ttk.Button(left, text="Add timetable", command=self.add_timetable).pack(
-            fill="x", pady=2
-        )
-        ttk.Button(left, text="Apply timetable edits", command=self.apply_timetable).pack(
-            fill="x", pady=2
-        )
-        ttk.Separator(left).pack(fill="x", pady=10)
-        ttk.Label(right, text="Activities").pack(anchor="w")
-        self.tree = ttk.Treeview(right, columns=("name", "day", "period", "start", "end"), show="headings")
-        self.tree.heading("name", text="Name")
-        self.tree.heading("day", text="Day")
-        self.tree.heading("period", text="Period")
-        self.tree.heading("start", text="Start")
-        self.tree.heading("end", text="End")
-        self.tree.column("name", width=200)
-        self.tree.column("day", width=60)
-        self.tree.column("period", width=60)
-        self.tree.column("start", width=80)
-        self.tree.column("end", width=80)
-        self.tree.pack(fill="both", expand=True, pady=4)
-        btns = ttk.Frame(right)
-        btns.pack(fill="x")
-        ttk.Button(btns, text="Add activity", command=self.add_activity).pack(side="left")
-        ttk.Button(btns, text="Delete activity", command=self.delete_activity).pack(side="left", padx=4)
-        ttk.Button(btns, text="Export to calendar", command=self.export).pack(side="right")
-
-        # status bar
-        bottom = ttk.Frame(self.root, padding=(10, 4))
-        bottom.pack(fill="x", side="bottom")
-        ttk.Label(bottom, textvariable=self.status_var, anchor="w").pack(fill="x")
-
-    def _populate_groups(self) -> None:
-        self.group_list.delete(0, tk.END)
-        for g in self.config.get("groups", []):
-            self.group_list.insert(tk.END, g.get("name", ""))
-
-    def _populate_timetables(self) -> None:
-        self.timetable_list.delete(0, tk.END)
-        for t in self.config.get("timetables", []):
-            self.timetable_list.insert(tk.END, t.get("name", ""))
-
-    def _populate_activities(self) -> None:
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        t = self._timetable()
-        if not t:
-            return
-        for idx, a in enumerate(t.get("activities", [])):
-            self.tree.insert("", "end", iid=str(idx), values=(
-                a.get("name", ""),
-                a.get("day", ""),
-                a.get("period", ""),
-                a.get("start_time", ""),
-                a.get("end_time", ""),
-            ))
-
-    def _load_group_fields(self) -> None:
-        selection = self.group_list.curselection()
-        if not selection:
-            return
-        idx = selection[0]
-        if idx < len(self.config.get("groups", [])):
-            group = self.config["groups"][idx]
-            self._status(f"Group: {group.get('name', '')}")
-
-    def _load_timetable_fields(self) -> None:
-        selection = self.timetable_list.curselection()
-        if not selection:
-            return
-        idx = selection[0]
-        if idx < len(self.config.get("timetables", [])):
-            timetable = self.config["timetables"][idx]
-            self._status(f"Timetable: {timetable.get('name', '')}")
-
-    def add_group(self) -> None:
-        name = tk.simpledialog.askstring("Add Group", "Group name:")
-        if name:
-            self.config.setdefault("groups", []).append({"id": str(len(self.config.get("groups", []))), "name": name})
-            self._populate_groups()
-            self._status(f"Added group '{name}'")
-
-    def apply_group(self) -> None:
-        self._status("Group edits applied (not saved yet)")
-
-    def add_timetable(self) -> None:
-        name = tk.simpledialog.askstring("Add Timetable", "Timetable name:")
-        if name:
-            self.config.setdefault("timetables", []).append({
-                "id": str(len(self.config.get("timetables", []))),
-                "name": name,
-                "days": ["MON", "TUE", "WED", "THU", "FRI"],
-                "start_time": "09:00",
-                "end_time": "17:00",
-                "period_minutes": 60,
-                "breaks": [],
-                "activities": [],
-            })
-            self._populate_timetables()
-            self._status(f"Added timetable '{name}'")
-
-    def apply_timetable(self) -> None:
-        self._status("Timetable edits applied (not saved yet)")
-
-    def open_config(self) -> None:
-        from tkinter import filedialog
-        name = filedialog.askopenfilename(
-            title="Open group/timetable configuration",
-            filetypes=[("JSON", "*.json"), ("All files", "*.*")],
-        )
-        if name:
-            self.path_var.set(name)
-            self.load()
-
-    def load(self) -> None:
-        try:
-            self.config_path = Path(self.path_var.get().strip())
-            self.config = load_config(self.config_path)
-            self._populate_groups()
-            self._populate_timetables()
-            self._populate_activities()
-            self._load_group_fields()
-            self._load_timetable_fields()
-            self._status(f"Loaded {self.config_path}")
-        except Exception as e:
-            messagebox.showerror("Load failed", str(e))
-
-    def save(self) -> None:
-        try:
-            self.config_path = Path(self.path_var.get().strip())
-            save_config(self.config, self.config_path)
-            self._status(f"Saved {self.config_path}")
-        except Exception as e:
-            messagebox.showerror("Save failed", str(e))
-
-    def add_activity(self) -> None:
-        t = self._timetable()
-        if not t:
-            return messagebox.showinfo("Activity", "Select a timetable first.")
-        ids = {str(a.get("id", "")) for a in t.get("activities", [])}
-        n = 1
-        while f"activity_{n}" in ids:
-            n += 1
-        t["activities"].append({
-            "id": f"activity_{n}",
-            "day": t.get("days", ["MON"])[0],
-            "period": 1,
-            "name": "New activity",
-            "start_time": t.get("start_time", ""),
-            "end_time": t.get("end_time", ""),
-            "group_ids": [],
-        })
-        self._populate_activities()
-        self._status("Activity added; edit its fields.")
-
-    def delete_activity(self) -> None:
-        selected = self._selected_activity()
-        t = self._timetable()
-        if not selected or not t:
-            return messagebox.showinfo("Activity", "Select an activity first.")
-        idx, a = selected
-        if messagebox.askyesno("Delete activity", f"Delete '{a.get('name')}'?"):
-            del t["activities"][idx]
-            self._populate_activities()
-            self._status("Activity deleted (not saved yet).")
-
-    def _selected_activity(self):
-        selection = self.tree.selection()
-        if not selection:
-            return None, None
-        idx = int(selection[0])
-        t = self._timetable()
-        if not t:
-            return None, None
-        idx = min(idx, len(t.get("activities", [])) - 1)
-        a = t["activities"][idx]
-        return idx, a
-
-    def export(self) -> None:
-        """Export timetable rules to calendar file."""
-        try:
-            from tkinter import filedialog
-            path = filedialog.asksaveasfilename(
-                title="Export / update calendar state",
-                initialfile="data/calendar.json",
-                defaultextension=".json",
-            )
-            if not path:
-                return
-            from ..groups.group_schedule import export_to_calendar
-            count = export_to_calendar(self.config, path)
-            self._status(f"Exported {count} timetable rules to {path}")
-            messagebox.showinfo(
-                "Export complete",
-                f"Exported {count} timetable rules. Existing non-timetable rules were retained. Groups are organizational metadata only; scheduling policy lives on the timetable and its slots.",
-            )
-        except Exception as e:
-            messagebox.showerror("Export failed", str(e))
-
-    def _timetable(self):
-        selection = self.timetable_list.curselection()
-        if not selection:
-            return None
-        idx = selection[0]
-        if idx < len(self.config.get("timetables", [])):
-            return self.config["timetables"][idx]
-        return None
-
-    def _status(self, message: str) -> None:
-        self.status_var.set(message) if hasattr(self, "status_var") else None
+    main()
