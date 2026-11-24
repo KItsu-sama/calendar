@@ -62,13 +62,13 @@ def _execute_command(argv: list[str]) -> int:
                 "calendar": str(Path(group_args.calendar)),
             }, indent=2))
             return 0
-        from ..groups.group_schedule_gui import main as group_editor_main
+        from ..ui.unified_gui import main as group_editor_main
         group_editor_main()
         return 0
 
     if argv in (["gui"], ["--gui"]):
-        from ..ui.gui import main as gui_main
-        gui_main()
+        from ui.unified_gui import main as unified_main
+        unified_main()
         return 0
 
     if not argv:

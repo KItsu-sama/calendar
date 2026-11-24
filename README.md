@@ -116,12 +116,10 @@ python main.py --help
 python main.py gui
 ```
 
-On Windows, run `run_calendar.cmd` for the launcher menu: use "Open Calendar
-GUI" (`python main.py gui`) for the calendar, or "Open Group Timetable
-Editor" (`python main.py group-schedule`) to manage groups and export
-timetables. From the unified GUI, the Files menu's "Open group editor…"
-opens the same group timetable editor alongside the calendar, sharing the
-active `groups_schedules.json`.
+On Windows, run `run_calendar.cmd` for the launcher menu. "Open Calendar GUI"
+(`python main.py gui`) and "Open Timetable Editor"
+(`python main.py group-schedule`) open the same single window; the second one
+starts with the first timetable ready to edit.
 
 Add `--debug` to a CLI command to print its execution stages, timings, and a
 compact diagnostic report to stderr. Normal command output and calendar audit
@@ -175,11 +173,24 @@ configuration automatically.
 
 ### GUI
 
-Launch with `python main.py gui` or `run_calendar.cmd`. The unified editor
-provides week/month views, navigation to today, event editing, group and
-timetable editing, and undo for recent in-session changes. Use **Files** to
-open a calendar or group-rules file, reload from disk, or undo. Calendar events
-and group timetable definitions are saved to separate files.
+Launch with `python main.py gui` or `run_calendar.cmd`. One window does
+everything: week/month views, events, **timetables** (days, times, slot
+length, place tag, any number of breaks, a subject per slot) and **groups**
+(name, ID, description, members). Click an event, a slot, a break, a timetable
+or a group to edit it in the panel on the right; drag across the grid to
+create an event. Saving an event warns, without blocking, when it overlaps
+something.
+
+Every change is validated and then written to `calendar.json` and
+`groups_schedules.json` in one transaction, so the two files cannot disagree;
+a failed write changes neither. Ctrl+Z undoes the last 30 changes. **Files**
+opens other files, reloads, shows the calendar as the commands that would
+rebuild it, and exports timetables into another calendar file.
+
+Keyboard: Tab into the grid, then Up/Down move between entries, Left/Right
+jump to the same time on the next day, Esc leaves, PgUp/PgDn change week or
+month; N new event, T today, W/M week or month, Ctrl+Z undo. In month view the
+arrow keys move between days and Enter opens that week.
 
 ### CLI
 
@@ -220,25 +231,28 @@ that rule. Supply both `--load` and `--save` to extend a saved calendar.
 
 ### Group timetable management
 
-Open the dedicated group timetable editor with `python main.py group-schedule`
-(on Windows: `run_calendar.cmd`, then option 5). It manages any number of
-groups: add a group, add one or more schedules per group, choose active days,
-start/end times and slot length, add activities and breaks, apply the edits,
-then save `groups_schedules.json`. Each group keeps its own priority,
-flexibility and override policy, and each schedule references its group.
+Timetables and groups are edited in the calendar window (`python main.py gui`;
+`python main.py group-schedule` opens the same window on the first timetable).
+Add a timetable from the School template or blank, then set its days,
+start/end times, slot length, place tag and breaks, and give each slot a
+subject and priority. Groups are labels only: a slot can belong to any number
+of them, chosen from the slot's panel. Changes are saved as you make them and
+the timetable's entries appear on the grid straight away.
 
-Export the timetables with the editor's **Export to calendar…** button, which
-merges generated timetable rules into a version-1 calendar while keeping all
-unrelated rules. The same export is available headless on Windows:
+A `groups_schedules.json` written by the earlier version-1 editor opens
+normally: it is upgraded in memory (schedules become timetables, the old group
+priority is kept on each slot, membership moves onto the slots), a copy of the
+original is kept as `groups_schedules.v1-backup.json`, and the file is rewritten
+as version 2 on your next change.
+
+Timetable entries are written into the calendar as weekly rules. To export
+them into a different calendar file, use **Files → Export timetables to another
+calendar…**, or headless:
 
 ```powershell
 python main.py group-schedule --export-config groups_schedules.json --calendar calendar.json
 ```
 
-From the unified calendar GUI (`python main.py gui`), Files → "Open group
-editor…" opens the same editor beside the calendar using the active
-configuration file; closing the editor reloads the calendar window so exported
-timetables appear on the grid.
 
 ## 07. Configuration and data integrity
 
@@ -305,7 +319,8 @@ end or the next break; after the break, the next period starts.
 
 Export translates assigned slots and breaks into weekly core calendar rules.
 The exporter replaces only rules whose IDs use the reserved
-`group_schedule__` prefix and removes exceptions attached to those replaced
+`timetable__` prefix (the version-1 editor used `group_schedule__`; those
+rules are cleaned up the first time a timetable is saved) and removes exceptions attached to those replaced
 generated rules. Unrelated calendar rules and their exceptions are preserved.
 The generated rules do not retain a core group ID. The editor's
 `override_policy` is metadata and is not enforced as a scheduling permission
@@ -358,8 +373,11 @@ calendar + profile + relations -> review, derivation, and planning report
   calculation.
 - `conflict.py` and `operations.py`: overlap detection, deterministic
   conflict handling, previews, and calendar mutations.
-- `group_schedule.py`, `group_schedule_gui.py`, and `unified_gui.py`: group
-  configuration, export, and the desktop editor.
+- `group_schedule.py` and `unified_gui.py`: timetable/group configuration,
+  export, and the single desktop window (`group_schedule_gui.py` only launches
+  it).
+- `transactional_persistence.py`: the GUI saves the calendar and the
+  configuration together through its `CoordinatedStore`.
 - `review.py`, `availability.py`, `derive.py`, and `planner.py`: sidecar
   review, availability, derived activities, and candidate planning.
 - `ai_escalation.py`, `resolution.py`, and `transactions.py`: prompt

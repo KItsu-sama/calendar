@@ -92,6 +92,25 @@ Direct `--change`, `--remove`, and `--cancel` commands are explicit user edits
 and may update a FIXED item. The protection invariant applies to automatic
 resolution: local and AI paths cannot alter any FIXED or CRITICAL item.
 
+## What Phase 8 Delivered
+- `cal_engine/ui/unified_gui.py` is now the only GUI. It edits events, timetables
+  and groups against the interactive grid. `groups/group_schedule_gui.py` just
+  launches it (`python main.py group-schedule` still works).
+- `groups/group_schedule.py`: `upgrade_config` (v1 -> v2), `load_config` accepts v1,
+  `apply_timetables(config, state)` is the in-memory form of the exporter.
+- Every GUI edit: copy -> mutate -> validate -> `CoordinatedStore` commit of both
+  files -> swap in memory. A failure leaves memory and both files untouched.
+- Fixed from the old editors: `delete_activity` used an undefined name; "Remove from
+  group" listed only groups the slot was NOT in; the v1 GUI could not save at all
+  against the v2 `save_config`.
+
+### Known gaps (Phase 8)
+- Stale tests still on the v1 config schema: `test_group_schedule` (2),
+  `test_transactional_persistence` (2). `test_v02` needs `examples/state.sample.json`,
+  which is not in the repo. `test_helpper` (3) read stdin.
+- README "Group timetable configuration" section still describes the v1 schema.
+- Not in the GUI yet: conflict resolution / AI prompt, `--free`, batch import, review run.
+
 ## Next Actions
 Phase 7 remains: obtain the referenced source spec, reproduce sections 5–9 and
 11-12 exactly, add deterministic seeded fuzz coverage, then perform the

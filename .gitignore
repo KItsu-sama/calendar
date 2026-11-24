@@ -12,6 +12,7 @@ data/*
 
 
 cal_changes.jsonl
+.cal_txn/
 data/calendar.json
 
 cal_engine/__pycache__/cli.cpython-314.pyc

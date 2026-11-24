@@ -78,3 +78,15 @@
       FIXED/CRITICAL items are never altered.
 - **Verify:** full test suite green; manual walkthrough of one AI-escalation
   case end to end (command → prompt → mock LLM response → transaction log).
+
+## Phase 8: One window for the calendar and the timetables — ✅ DONE
+- [x] Merge `group_schedule_gui.py` into `unified_gui.py`: timetables (place tag,
+      description, ID, days, times, slot length, any number of breaks), groups
+      (CRUD, members, rename cascades), slot group membership, undo, export.
+- [x] Move the window onto the version-2 configuration (`timetables`, metadata-only
+      groups, `timetable__` rule prefix); open version-1 files via `upgrade_config`.
+- [x] Save calendar + configuration in one `CoordinatedStore` transaction;
+      validate before writing, adopt in memory only after the write succeeds.
+- [x] Keyboard-operable grid, WCAG 2.1 AA palette, priority written out as text.
+- [x] `group_schedule_gui.py` reduced to a launcher; README/launcher updated.
+- **Verify:** `tests/test_unified_gui.py` (19 headless tests, run under xvfb).

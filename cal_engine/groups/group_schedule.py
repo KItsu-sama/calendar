@@ -34,11 +34,71 @@ CONFIG_VERSION = 2
 GENERATED_PREFIX = "timetable__"
 DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
 
+def upgrade_config(data: Any) -> Any:
+    """Return a version-2 copy of a version-1 configuration (``schedules``).
+
+    Version 1 stored scheduling policy on the group and linked each schedule to
+    one group through ``group_id``. Version 2 keeps groups as metadata only, so:
+
+    * ``schedules`` become ``timetables``;
+    * the schedule's ``group_id`` becomes membership (``group_ids``) on each of
+      its activities;
+    * a group's old ``priority`` is copied onto activities that had none of
+      their own, so a timetable keeps the colour it had before the upgrade;
+    * ``flexibility`` and ``override_policy`` on groups are dropped (they were
+      never enforced).
+
+    Anything that is not a version-1 object is returned unchanged.
+    """
+    if not isinstance(data, dict) or data.get("version") != 1 or "schedules" not in data:
+        return data
+    groups = [dict(g) for g in data.get("groups", []) if isinstance(g, dict)]
+    by_id = {str(g.get("id", "")): g for g in groups}
+    timetables = []
+    for sched in data.get("schedules", []):
+        if not isinstance(sched, dict):
+            continue
+        gid = str(sched.get("group_id", "")).strip()
+        default_priority = (by_id.get(gid) or {}).get("priority")
+        activities = []
+        for act in sched.get("activities", []):
+            act = dict(act)
+            ids = [str(x) for x in act.get("group_ids", [])]
+            if gid and gid in by_id and gid not in ids:
+                ids.append(gid)
+            act["group_ids"] = ids
+            if default_priority and not act.get("priority"):
+                act["priority"] = default_priority
+            activities.append(act)
+        timetables.append({
+            "id": sched.get("id", ""),
+            "name": sched.get("name", sched.get("id", "")),
+            "description": sched.get("description", ""),
+            "place_tag": sched.get("place_tag", ""),
+            "days": list(sched.get("days", [])),
+            "start_time": sched.get("start_time", ""),
+            "end_time": sched.get("end_time", ""),
+            "period_minutes": sched.get("period_minutes", 45),
+            "breaks": [dict(b) for b in sched.get("breaks", [])],
+            "activities": activities,
+        })
+    return {
+        "version": CONFIG_VERSION,
+        "groups": [
+            {"id": g.get("id", ""), "name": g.get("name", g.get("id", "")), "description": g.get("description", "")}
+            for g in groups
+        ],
+        "timetables": timetables,
+    }
+
+
 def load_config(path: str | Path) -> dict[str, Any]:
+    """Load and validate a configuration, upgrading a version-1 file in memory."""
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"Cannot load group/schedule configuration: {exc}") from None
+    data = upgrade_config(data)
     validate_config(data)
     return data
 
@@ -114,18 +174,14 @@ def validate_config(config: dict[str, Any]) -> None:
                 raise ValueError("Invalid priority for break.")
 
 
-def export_to_calendar(config: dict[str, Any], calendar_path: str | Path) -> int:
-    """Merge generated timetable rules into a standard version-1 calendar JSON.
+def apply_timetables(config: dict[str, Any], state: CalendarState) -> int:
+    """Replace the generated timetable rules inside ``state`` (in memory only).
 
     Only rules created by this exporter (the reserved prefix) are replaced.
-    Existing unrelated activities and their exceptions are retained.
-    Exporting a timetable turns its slots/breaks into weekly core calendar
-    rules; the generated rules are independent copies, so deleting or editing a
-    timetable later never affects calendar history that was already exported.
+    Existing unrelated activities and their exceptions are retained. Returns
+    the number of generated rules.
     """
     validate_config(config)
-    target = Path(calendar_path)
-    state = CalendarState.load(target) if target.exists() else CalendarState()
     old_ids = {r.id for r in state.rules if r.id.startswith(GENERATED_PREFIX)}
     state.rules = [r for r in state.rules if r.id not in old_ids]
     state.exceptions = [e for e in state.exceptions if e.rule_id not in old_ids]
@@ -161,5 +217,20 @@ def export_to_calendar(config: dict[str, Any], calendar_path: str | Path) -> int
         raise StorageError("Generated ID collision: " + ", ".join(collisions))
     state.rules.extend(generated)
     state._validate()
-    state.save(target)
     return len(generated)
+
+
+def export_to_calendar(config: dict[str, Any], calendar_path: str | Path) -> int:
+    """Merge generated timetable rules into a standard version-1 calendar JSON.
+
+    Only rules created by this exporter (the reserved prefix) are replaced.
+    Existing unrelated activities and their exceptions are retained.
+    Exporting a timetable turns its slots/breaks into weekly core calendar
+    rules; the generated rules are independent copies, so deleting or editing a
+    timetable later never affects calendar history that was already exported.
+    """
+    target = Path(calendar_path)
+    state = CalendarState.load(target) if target.exists() else CalendarState()
+    count = apply_timetables(config, state)
+    state.save(target)
+    return count
