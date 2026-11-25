@@ -23,7 +23,7 @@ echo 1. Open Calendar GUI
 echo 2. Run CLI Command (Normal)
 echo 3. Run CLI Command (Debug Mode)
 echo 4. Show CLI help
-echo 5. Open Timetable Editor (same window as the calendar)
+echo 5. Open Timetable Editor (use this)
 echo 0. Exit
 echo.
 set /p "choice=Choose an option: "
