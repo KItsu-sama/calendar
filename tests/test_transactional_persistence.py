@@ -68,15 +68,14 @@ CALENDAR = {
 }
 
 INVALID_CONFIG = {
-    "version": 1,
+    "version": 2,
     "groups": [],
-    "schedules": [{
+    "timetables": [{
         "id": "s1",
-        "group_id": "ghost",
         "name": "x",
         "days": ["MON"],
         "start_time": "09:00",
-        "end_time": "10:00",
+        "end_time": "08:00",
         "period_minutes": 60,
         "activities": [],
         "breaks": [],
@@ -325,7 +324,7 @@ def test_multi_file_timetable_scenario_commits_together(tmp_path):
     updated_calendar = {
         "version": 1,
         "rules": [*CALENDAR["rules"], {
-            "id": "group_schedule__work_week__mon_p1",
+            "id": "timetable__work_week__mon_p1",
             "name": "Work block (MON P1)",
             "flexibility": "FIXED",
             "priority": "HIGH",

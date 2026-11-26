@@ -439,14 +439,14 @@ class CoordinatedStore:
         validator: Optional[Callable[[object], None]] = None,
     ) -> None:
         """Stage a group/schedule configuration JSON, validated with ``validate_config``."""
-        from ..groups.group_schedule import validate_config
+        from ..groups.group_schedule import upgrade_config, validate_config
 
         if not isinstance(config, dict):
             raise TypeError("stage_group_config expects a dict")
 
         def _validate_config(data: object) -> None:
             try:
-                validate_config(data)
+                validate_config(upgrade_config(data))
             except ValueError as error:
                 raise ValidationError(str(error)) from None
 

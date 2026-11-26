@@ -19,20 +19,23 @@ existing version-1 calendar.json files remain schema-compatible.
 """
 from __future__ import annotations
 
+import copy
 import json
 import re
 from pathlib import Path
 from typing import Any
 
 from ..core.models import (
-    ActivityRule, Flexibility, Priority, Recurrence,
+    ActivityRule, CalendarException, Flexibility, Priority, Recurrence,
     RecurrenceType, TimeConstraints, TimeWindow,
 )
 from ..core.storage import CalendarState, StorageError
 
 CONFIG_VERSION = 2
 GENERATED_PREFIX = "timetable__"
+LEGACY_PREFIX = "group_schedule__"
 DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
+_EXPORTED_NAME_SUFFIX = re.compile(r" \([A-Z]{3}(?: P[^)]+)?\)$")
 
 def upgrade_config(data: Any) -> Any:
     """Return a version-2 copy of a version-1 configuration (``schedules``).
@@ -174,47 +177,260 @@ def validate_config(config: dict[str, Any]) -> None:
                 raise ValueError("Invalid priority for break.")
 
 
-def apply_timetables(config: dict[str, Any], state: CalendarState) -> int:
-    """Replace the generated timetable rules inside ``state`` (in memory only).
+def is_generated_rule_id(rule_id: str) -> bool:
+    """True for current and legacy timetable-exporter IDs."""
+    return rule_id.startswith(GENERATED_PREFIX) or rule_id.startswith(LEGACY_PREFIX)
 
-    Only rules created by this exporter (the reserved prefix) are replaced.
-    Existing unrelated activities and their exceptions are retained. Returns
-    the number of generated rules.
+
+def generated_rule_id(timetable_id: str, source_id: str) -> str:
+    """Stable calendar rule ID: timetable identity plus the canonical source id."""
+    return f"{GENERATED_PREFIX}{timetable_id}__{source_id}"
+
+
+def _strip_generated_prefix(rule_id: str) -> str | None:
+    for prefix in (GENERATED_PREFIX, LEGACY_PREFIX):
+        if rule_id.startswith(prefix):
+            return rule_id[len(prefix):]
+    return None
+
+
+def _activity_merge_key(activity: dict[str, Any]) -> tuple:
+    """Slots that share this key become one weekly rule with several weekdays."""
+    groups = tuple(sorted(str(g) for g in activity.get("group_ids") or []))
+    return (
+        str(activity.get("name", "")).strip(),
+        activity.get("start_time"),
+        activity.get("end_time"),
+        activity.get("priority") or "NORMAL",
+        groups,
+        activity.get("valid_from"),
+        activity.get("valid_until"),
+        tuple(activity.get("except_days") or []),
+        activity.get("flexibility") or Flexibility.FIXED.value,
+    )
+
+
+def _canonical_activity(group: list[dict[str, Any]]) -> dict[str, Any]:
+    return min(group, key=lambda a: (DAYS.index(a["day"]) if a.get("day") in DAYS else 99, a["id"]))
+
+
+def _ordered_days(days: list[str]) -> list[str]:
+    return [d for d in DAYS if d in days]
+
+
+def _bare_exported_name(name: str) -> str:
+    return _EXPORTED_NAME_SUFFIX.sub("", name)
+
+
+def _rule_fingerprint(rule: ActivityRule) -> tuple:
+    interval = rule.time_constraints.fixed_interval
+    start = interval.start_time if interval else ""
+    end = interval.end_time if interval else ""
+    return (
+        _bare_exported_name(rule.name),
+        rule.flexibility.value,
+        rule.priority.value,
+        start,
+        end,
+        tuple(rule.group_ids),
+    )
+
+
+def _activity_rule(
+    *,
+    rule_id: str,
+    name: str,
+    priority: str,
+    days: list[str],
+    start: str,
+    end: str,
+    group_ids: list[str] | None = None,
+    valid_from: str | None = None,
+    valid_until: str | None = None,
+    except_days: list[str] | None = None,
+    flexibility: str | None = None,
+) -> ActivityRule:
+    return ActivityRule(
+        id=rule_id,
+        name=name,
+        flexibility=Flexibility(flexibility or Flexibility.FIXED.value),
+        priority=Priority(priority),
+        recurrence=Recurrence(
+            type=RecurrenceType.WEEKLY,
+            days_of_week=_ordered_days(days),
+            except_days=list(except_days or []),
+            valid_from=valid_from,
+            valid_until=valid_until,
+        ),
+        time_constraints=TimeConstraints(fixed_interval=TimeWindow(start, end)),
+        group_ids=list(group_ids or []),
+    )
+
+
+def _alias_ids(timetable_id: str, source_id: str, extra_days: list[str] | None = None) -> list[str]:
+    aliases = [
+        generated_rule_id(timetable_id, source_id),
+        f"{LEGACY_PREFIX}{timetable_id}__{source_id}",
+    ]
+    for day in extra_days or []:
+        aliases.append(generated_rule_id(timetable_id, f"{source_id}__{day}"))
+        aliases.append(f"{LEGACY_PREFIX}{timetable_id}__{source_id}__{day}")
+    return aliases
+
+
+def build_timetable_rules(config: dict[str, Any]) -> tuple[list[ActivityRule], dict[str, str]]:
+    """Compile timetable slots/breaks into weekly rules and an old-ID → new-ID map.
+
+    Slots that share identity, name, times, priority, groups and validity are
+    one WEEKLY rule with every matching weekday. Different times never merge.
+    Rule IDs are ``timetable__{timetable_id}__{canonical_activity_or_break_id}``.
+    """
+    generated: list[ActivityRule] = []
+    aliases: dict[str, str] = {}
+    seen: set[str] = set()
+
+    def _register(rule: ActivityRule, source_ids: list[str], timetable_id: str, day_suffixes: bool) -> None:
+        if rule.id in seen:
+            raise StorageError(f"Generated ID collision: {rule.id}")
+        seen.add(rule.id)
+        generated.append(rule)
+        extra = list(rule.recurrence.days_of_week) if day_suffixes else []
+        for source_id in source_ids:
+            for alias in _alias_ids(timetable_id, source_id, extra):
+                aliases.setdefault(alias, rule.id)
+
+    for timetable in config["timetables"]:
+        tid = timetable["id"]
+        active = set(timetable["days"])
+        buckets: dict[tuple, list[dict[str, Any]]] = {}
+        for activity in timetable.get("activities", []):
+            if activity.get("day") not in active:
+                continue
+            buckets.setdefault(_activity_merge_key(activity), []).append(activity)
+        for key, group in buckets.items():
+            canonical = _canonical_activity(group)
+            name, start, end, priority, groups, valid_from, valid_until, except_days, flexibility = key
+            rule = _activity_rule(
+                rule_id=generated_rule_id(tid, canonical["id"]),
+                name=name,
+                priority=priority,
+                days=[a["day"] for a in group],
+                start=start,
+                end=end,
+                group_ids=list(groups),
+                valid_from=valid_from,
+                valid_until=valid_until,
+                except_days=list(except_days),
+                flexibility=flexibility,
+            )
+            _register(rule, [a["id"] for a in group], tid, day_suffixes=True)
+        for br in timetable.get("breaks", []):
+            bid = str(br.get("id") or "break")
+            rule = _activity_rule(
+                rule_id=generated_rule_id(tid, bid),
+                name=str(br.get("name") or "Break"),
+                priority=br.get("priority") or "HIGH",
+                days=list(timetable["days"]),
+                start=br["start_time"],
+                end=br["end_time"],
+            )
+            _register(rule, [bid], tid, day_suffixes=True)
+    return generated, aliases
+
+
+def lookup_generated_block(
+    rule_id: str,
+    config: dict[str, Any],
+    weekday: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any] | None] | None:
+    """Map a generated rule (and optional occurrence weekday) back to config.
+
+    For a merged weekly rule the weekday selects the slot that actually falls
+    on that day, so editing Wednesday does not rewrite Monday's activity id.
+    """
+    rest = _strip_generated_prefix(rule_id)
+    if rest is None:
+        return None
+    for tt in sorted(config.get("timetables", []), key=lambda t: -len(str(t.get("id", "")))):
+        head = str(tt.get("id", "")) + "__"
+        if not rest.startswith(head):
+            continue
+        tail = rest[len(head):]
+        for br in tt.get("breaks", []):
+            bid = str(br.get("id") or "break")
+            if tail == bid or tail.startswith(bid + "__"):
+                return tt, None, br
+        act = next((a for a in tt.get("activities", []) if a.get("id") == tail), None)
+        if act is None:
+            return None
+        if weekday and weekday != act.get("day"):
+            key = _activity_merge_key(act)
+            sibling = next(
+                (a for a in tt.get("activities", [])
+                 if a.get("day") == weekday and _activity_merge_key(a) == key),
+                None,
+            )
+            if sibling:
+                act = sibling
+        return tt, act, None
+    return None
+
+
+def _remap_exceptions(
+    exceptions: list[CalendarException],
+    old_ids: set[str],
+    id_map: dict[str, str],
+) -> list[CalendarException]:
+    kept: list[CalendarException] = []
+    for item in exceptions:
+        if item.rule_id not in old_ids:
+            kept.append(item)
+            continue
+        mapped = id_map.get(item.rule_id)
+        if mapped is None:
+            continue
+        if mapped == item.rule_id:
+            kept.append(item)
+            continue
+        updated = copy.deepcopy(item)
+        updated.rule_id = mapped
+        kept.append(updated)
+    return kept
+
+
+def apply_timetables(config: dict[str, Any], state: CalendarState) -> int:
+    """Replace generated timetable rules inside ``state`` (in memory only).
+
+    Only exporter-owned IDs (``timetable__`` and legacy ``group_schedule__``)
+    are replaced. Manual rules stay. Exceptions on still-generated rules are
+    remapped onto the stable IDs; exceptions for deleted slots are dropped.
     """
     validate_config(config)
-    old_ids = {r.id for r in state.rules if r.id.startswith(GENERATED_PREFIX)}
+    generated, aliases = build_timetable_rules(config)
+    old_rules = [r for r in state.rules if is_generated_rule_id(r.id)]
+    old_ids = {r.id for r in old_rules}
+
+    by_fingerprint: dict[tuple, list[str]] = {}
+    for rule in generated:
+        by_fingerprint.setdefault(_rule_fingerprint(rule), []).append(rule.id)
+
+    id_map: dict[str, str] = {}
+    new_ids = {r.id for r in generated}
+    for old in old_rules:
+        if old.id in aliases:
+            id_map[old.id] = aliases[old.id]
+        elif old.id in new_ids:
+            id_map[old.id] = old.id
+        else:
+            matches = by_fingerprint.get(_rule_fingerprint(old), [])
+            if len(matches) == 1:
+                id_map[old.id] = matches[0]
+
     state.rules = [r for r in state.rules if r.id not in old_ids]
-    state.exceptions = [e for e in state.exceptions if e.rule_id not in old_ids]
-    generated: list[ActivityRule] = []
-    for timetable in config["timetables"]:
-        for activity in timetable.get("activities", []):
-            day = activity["day"]
-            if day not in timetable["days"]:
-                continue
-            aid = f"{GENERATED_PREFIX}{timetable['id']}__{activity['id']}"
-            generated.append(ActivityRule(
-                id=aid,
-                name=f"{activity['name']} ({day} P{activity.get('period', '?')})",
-                flexibility=Flexibility.FIXED,
-                priority=Priority(activity.get("priority", "NORMAL")),
-                recurrence=Recurrence(type=RecurrenceType.WEEKLY, days_of_week=[day]),
-                time_constraints=TimeConstraints(fixed_interval=TimeWindow(activity["start_time"], activity["end_time"])),
-                group_ids=list(activity.get("group_ids", [])),
-            ))
-        for br in timetable.get("breaks", []):
-            for day in timetable["days"]:
-                aid = f"{GENERATED_PREFIX}{timetable['id']}__{br.get('id','break')}__{day}"
-                generated.append(ActivityRule(
-                    id=aid, name=f"{br.get('name','Break')} ({day})",
-                    flexibility=Flexibility.FIXED,
-                    priority=Priority(br.get("priority", "HIGH")),
-                    recurrence=Recurrence(type=RecurrenceType.WEEKLY, days_of_week=[day]),
-                    time_constraints=TimeConstraints(fixed_interval=TimeWindow(br["start_time"], br["end_time"])),
-                ))
-    existing_ids = {r.id for r in state.rules}
-    collisions = [r.id for r in generated if r.id in existing_ids]
+    collisions = [r.id for r in generated if any(existing.id == r.id for existing in state.rules)]
     if collisions:
         raise StorageError("Generated ID collision: " + ", ".join(collisions))
+    state.exceptions = _remap_exceptions(state.exceptions, old_ids, id_map)
     state.rules.extend(generated)
     state._validate()
     return len(generated)

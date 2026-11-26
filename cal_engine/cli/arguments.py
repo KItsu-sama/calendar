@@ -31,6 +31,7 @@ _MASTER_ACTIONS = (
     "--generate-prompt",
     "--check",
     "--list-calendars",
+    "--activities",
     "--reset",
 )
 

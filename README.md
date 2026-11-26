@@ -245,14 +245,14 @@ priority is kept on each slot, membership moves onto the slots), a copy of the
 original is kept as `groups_schedules.v1-backup.json`, and the file is rewritten
 as version 2 on your next change.
 
-Timetable entries are written into the calendar as weekly rules. To export
-them into a different calendar file, use **Files → Export timetables to another
-calendar…**, or headless:
+Saving a timetable (or filling slots on the grid) rebuilds only the generated
+weekly rules. Independent events you created in the event editor are left
+alone. To export timetable rules into a different calendar file, use
+**Files → Export timetables to another calendar…**, or headless:
 
 ```powershell
 python main.py group-schedule --export-config groups_schedules.json --calendar calendar.json
 ```
-
 
 ## 07. Configuration and data integrity
 
@@ -318,13 +318,28 @@ slots, and save. A 45-minute period is shortened if it reaches the timetable
 end or the next break; after the break, the next period starts.
 
 Export translates assigned slots and breaks into weekly core calendar rules.
-The exporter replaces only rules whose IDs use the reserved
-`timetable__` prefix (the version-1 editor used `group_schedule__`; those
-rules are cleaned up the first time a timetable is saved) and removes exceptions attached to those replaced
-generated rules. Unrelated calendar rules and their exceptions are preserved.
-The generated rules do not retain a core group ID. The editor's
-`override_policy` is metadata and is not enforced as a scheduling permission
-by the core conflict solver.
+`groups_schedules.json` is the source of truth for those timetable-generated
+activities; `calendar.json` stores the weekly rules the scheduling engine
+reads. The exporter (`apply_timetables` / **Files → Export timetables…**) is
+the only path that creates or replaces those rules. The event editor is for
+independent events and genuinely individual recurring activities, not for a
+second copy of timetable generation.
+
+Generated rule IDs are stable: `timetable__{timetable_id}__{activity_or_break_id}`.
+Slots that share the same subject, times, priority, groups and validity are
+one `WEEKLY` rule with every matching weekday. The same subject at a
+different time stays a separate rule. Breaks for a timetable become one
+weekly rule for all active days. Re-exporting an unchanged timetable leaves
+calendar state identical: no duplicate IDs, no lost manual events.
+
+Existing calendars are migrated in place without a schema bump. Legacy
+`group_schedule__…` IDs and older per-day break IDs (`…__break_1__MON`) are
+rewritten onto the stable IDs; exceptions attached to those rules are remapped
+when the slot still exists and dropped only when that slot has been deleted.
+Unrelated calendar rules and their exceptions are never replaced. The
+generated rules do not retain a core group ID. The editor's `override_policy`
+is metadata and is not enforced as a scheduling permission by the core
+conflict solver.
 
 ### Snapshots, backup, and recovery
 
@@ -414,8 +429,9 @@ workflow uses a separate snapshot file to summarize source-data differences.
 
 Both interfaces work with the same version-1 calendar format. The CLI uses
 explicit `--load`/`--save` options for its calendar operations. The unified
-GUI saves the calendar and group timetable configuration separately and
-exports generated group rules into the calendar.
+GUI saves the calendar and group timetable configuration together when a
+timetable changes, and always regenerates timetable rules from the
+configuration rather than from the event editor.
 
 ## 09. AI integration
 

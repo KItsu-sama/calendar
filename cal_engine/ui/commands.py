@@ -50,7 +50,7 @@ from ..core.operations import (
 )
 from ..core.parser import CommandParseError, parse_day_date, parse_time_range
 from ..core.storage import CalendarState, StorageError
-from ..groups.group_schedule import GENERATED_PREFIX
+from ..groups.group_schedule import is_generated_rule_id
 
 MUTATIONS = {"add", "remove", "change", "move", "cancel", "exception"}
 QUERIES = {"schedule", "free", "conflicts", "check", "preview"}
@@ -134,7 +134,7 @@ def _resolve(state: CalendarState, token: str) -> str:
 
 
 def _guard(rule_id: str) -> None:
-    if rule_id.startswith(GENERATED_PREFIX):
+    if is_generated_rule_id(rule_id):
         raise CLIError("That belongs to a timetable. Edit it from its slot on the grid.")
 
 

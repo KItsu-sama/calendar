@@ -44,10 +44,12 @@ from ..core.storage import CalendarState
 from ..core.transactional_persistence import CoordinatedStore
 from ..groups.group_schedule import (
     CONFIG_VERSION,
-    GENERATED_PREFIX,
     apply_timetables,
     export_to_calendar,
+    generated_rule_id,
+    is_generated_rule_id,
     load_config,
+    lookup_generated_block,
     validate_config,
 )
 from ..scheduling.change_log import log_change
@@ -155,8 +157,6 @@ def _get_palette():
 DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
 DAY_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 DAY_LONG = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-GROUP_PREFIX = GENERATED_PREFIX            # rules written by the timetable exporter
-LEGACY_PREFIX = "group_schedule__"         # what the version-1 exporter wrote
 SNAP = 15
 
 
@@ -224,6 +224,22 @@ def unique_id(base: str, taken: set[str]) -> str:
         n += 1
         candidate = f"{base}_{n}"
     return candidate
+
+
+def allocate_id(base: str, taken: set[str]) -> str:
+    """Prefer ``base`` itself; only suffix when that ID is already used."""
+    if base not in taken:
+        return base
+    n, candidate = 2, f"{base}_2"
+    while candidate in taken:
+        n += 1
+        candidate = f"{base}_{n}"
+    return candidate
+
+
+def slug_id(text: str) -> str:
+    value = re.sub(r"[^A-Za-z0-9]+", "_", text.strip()).strip("_").casefold()
+    return value or "event"
 
 
 def slot_layout(timetable: dict[str, Any]) -> list[dict[str, Any]]:
@@ -998,6 +1014,8 @@ class UnifiedCalendarGUI:
         }.get(repeat, "")
         if repeat != "Once" and not self.edit_rule_id:
             text += f" Starting {day.day} {month_calendar.month_abbr[day.month]}."
+            if self.ev_fill_btn.winfo_ismapped():
+                text += " For a school-style repeating slot, fill the timetable instead of saving a separate weekly event."
         self.ev_hint.set(text)
 
     # ── keys ───────────────────────────────────────────────────────────────
@@ -1048,9 +1066,6 @@ class UnifiedCalendarGUI:
         if not config["timetables"]:
             return state
         candidate = state.copy()
-        legacy = {r.id for r in candidate.rules if r.id.startswith(LEGACY_PREFIX)}
-        candidate.rules = [r for r in candidate.rules if r.id not in legacy]
-        candidate.exceptions = [x for x in candidate.exceptions if x.rule_id not in legacy]
         apply_timetables(config, candidate)
         return candidate
 
@@ -1292,9 +1307,6 @@ class UnifiedCalendarGUI:
         result = mutate(config, state)
         if timetables:
             validate_config(config)
-            legacy = {r.id for r in state.rules if r.id.startswith(LEGACY_PREFIX)}
-            state.rules = [r for r in state.rules if r.id not in legacy]
-            state.exceptions = [x for x in state.exceptions if x.rule_id not in legacy]
             apply_timetables(config, state)
         state._validate()
         self._write(config if timetables else None, state, what)
@@ -1375,22 +1387,9 @@ class UnifiedCalendarGUI:
         group = self._group(group_id)
         return group["name"] if group else group_id
 
-    def _parse_generated(self, rule_id: str, config: dict | None = None):
+    def _parse_generated(self, rule_id: str, config: dict | None = None, weekday: str | None = None):
         """Map a generated rule id back to (timetable, slot, break) in the configuration."""
-        if not rule_id.startswith(GROUP_PREFIX):
-            return None
-        rest = rule_id[len(GROUP_PREFIX):]
-        for tt in sorted((config or self.config)["timetables"], key=lambda t: -len(t["id"])):
-            head = tt["id"] + "__"
-            if not rest.startswith(head):
-                continue
-            tail = rest[len(head):]
-            act = next((a for a in tt.get("activities", []) if a["id"] == tail), None)
-            if act:
-                return tt, act, None
-            brk = next((b for b in tt.get("breaks", []) if tail.startswith(b.get("id", "break") + "__")), None)
-            return tt, None, brk
-        return None
+        return lookup_generated_block(rule_id, config or self.config, weekday)
 
     # ── block collection ───────────────────────────────────────────────────
     def _collect(self, start: date, end: date) -> list[Block]:
@@ -1400,7 +1399,7 @@ class UnifiedCalendarGUI:
             rule = rules.get(item.activity_id) if item.activity_id else None
             if rule is None:
                 rule = next((r for r in self.state.rules if r.name == item.name), None)
-            parsed = self._parse_generated(rule.id) if rule else None
+            parsed = self._parse_generated(rule.id, weekday=DAYS[item.start.weekday()]) if rule else None
             if parsed:
                 tt, act, brk = parsed
                 if brk is not None:
@@ -2055,7 +2054,7 @@ class UnifiedCalendarGUI:
         """Every activity name already in use (events and timetable slots), for the reuse pickers."""
         known: dict[str, dict[str, Any]] = {}
         for rule in self.state.rules:
-            if not rule.id.startswith((GROUP_PREFIX, LEGACY_PREFIX)):
+            if not is_generated_rule_id(rule.id):
                 known.setdefault(rule.name, {"priority": rule.priority.value, "groups": []})
         for tt in self.config["timetables"]:
             for act in tt.get("activities", []):
@@ -2367,7 +2366,7 @@ class UnifiedCalendarGUI:
 
             def mutate(_config, state):
                 existing = next((r for r in state.rules if r.id == edit_id), None) if edit_id else None
-                if existing and existing.id.startswith((GROUP_PREFIX, LEGACY_PREFIX)):
+                if existing and is_generated_rule_id(existing.id):
                     raise ValueError("This belongs to a timetable. Edit it from its slot.")
                 if existing and existing.time_constraints.day_time_windows:
                     raise ValueError("This rule has different times on different days. "
@@ -2393,11 +2392,13 @@ class UnifiedCalendarGUI:
                     return [existing.id]
                 prefix = {"Once": "custom__", "Every day": "custom_daily__"}.get(repeat, "custom_weekly__")
                 made, taken = [], {r.id for r in state.rules}
+                slug = slug_id(name)
                 for when in dates:
-                    stamp, n = when.isoformat().replace("-", ""), 1
-                    while f"{prefix}{stamp}__{n}" in taken:
-                        n += 1
-                    rule_id = f"{prefix}{stamp}__{n}"
+                    if repeat == "Once":
+                        base = f"{prefix}{slug}_{when.isoformat().replace('-', '')}" if len(dates) > 1 else f"{prefix}{slug}"
+                    else:
+                        base = f"{prefix}{slug}"
+                    rule_id = allocate_id(base, taken)
                     taken.add(rule_id)
                     constraints = TimeConstraints(fixed_interval=TimeWindow(start, end),
                                                   date=when.isoformat() if repeat == "Once" else None)
@@ -2457,7 +2458,7 @@ class UnifiedCalendarGUI:
     def _delete_event(self):
         rule_id = self.edit_rule_id
         rule = next((r for r in self.state.rules if r.id == rule_id), None)
-        if not rule or rule.id.startswith((GROUP_PREFIX, LEGACY_PREFIX)):
+        if not rule or is_generated_rule_id(rule.id):
             return
 
         def mutate(_config, state):
@@ -2523,7 +2524,7 @@ class UnifiedCalendarGUI:
         self.sl_error.set("")
         self.sl_clear.state(["!disabled"])
         self._refresh_slot_groups()
-        self.sl_warn.set(self._overlap_note(ctx["date"], s, e, f"{GROUP_PREFIX}{tid}__{aid}"))
+        self.sl_warn.set(self._overlap_note(ctx["date"], s, e, generated_rule_id(tid, aid)))
         self._redraw()
         self._saved(f"Saved {name} on {DAY_SHORT[DAYS.index(day)]}")
 

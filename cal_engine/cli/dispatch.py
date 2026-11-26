@@ -23,7 +23,7 @@ from ..ui.helpper import Help
 from .errors import CLIError
 from .mutations import _run_mutation
 from .output import _print_json
-from .queries import _list_calendars, _run_query
+from .queries import _list_calendars, _list_activities, _run_query
 from .special import _run_batch, _run_today, _run_week
 from ..debuger.trace import trace_stage
 
@@ -186,6 +186,10 @@ def _execute_command(argv: list[str]) -> int:
     if action == "--list-calendars":
         with trace_stage("query.list-calendars"):
             return _list_calendars(parsed_args.load)
+
+    if action == "--activities":
+        with trace_stage("query.activities"):
+            return _list_activities(parsed_args.load)
 
     tokens = parsed_args.tokens[1:]
 

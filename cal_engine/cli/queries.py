@@ -188,3 +188,25 @@ def _list_calendars(calendar_path: str | Path | None = None) -> int:
     active = Path(calendar_path) if calendar_path else Path.cwd() / "calendar.json"
     _display_calendars(Terminal(), active)
     return 0
+
+
+def _list_activities(state_path: str | Path | None = None) -> int:
+    """List all activity names in the current calendar state.
+
+    Usage: ``cal --activities``
+
+    Prints each activity's name on a separate line, along with its ID.
+    """
+    from ..core.storage import CalendarState
+
+    state = CalendarState.load(state_path) if state_path else CalendarState()
+    if not state.rules:
+        terminal = Terminal()
+        terminal.info("No activities found.")
+        return 0
+
+    terminal = Terminal()
+    terminal.print(f"Activities ({len(state.rules)}):")
+    for rule in state.rules:
+        terminal.print(f"  {rule.name} [{rule.id}]")
+    return 0
